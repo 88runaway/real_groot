@@ -39,7 +39,7 @@ LEROBOT_MODALITY_FILENAME = "modality.json"
 LEROBOT_STATS_FILE_NAME = "stats.json"
 LEROBOT_RELATIVE_STATS_FILE_NAME = "relative_stats.json"
 
-ALLOWED_MODALITIES = ["video", "state", "action", "language"]
+ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask"]
 DEFAULT_COLUMN_NAMES = {
     "state": "observation.state",
     "action": "action",
@@ -178,6 +178,7 @@ class LeRobotEpisodeLoader:
         self.feature_config = self.info_meta.get("features", {})
         self.data_path_pattern = self.info_meta["data_path"]
         self.video_path_pattern = self.info_meta.get("video_path")
+        self.mask_path_pattern = self.info_meta.get("mask_path")
         self.chunk_size = self.info_meta["chunks_size"]
         self.fps = self.info_meta.get("fps", 30)
 
@@ -401,6 +402,56 @@ class LeRobotEpisodeLoader:
 
         return video_data
 
+    def _load_mask_file(self, mask_path: Path, indices: np.ndarray) -> np.ndarray:
+        """Load masks from npz/npy file at specified indices."""
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Mask file does not exist: {mask_path}")
+        suffix = mask_path.suffix.lower()
+        if suffix not in {".npz", ".npy"}:
+            raise ValueError(f"Only .npz or .npy mask files are supported: {mask_path}")
+
+        if suffix == ".npy":
+            masks = np.load(mask_path)
+        else:
+            npz_data = np.load(mask_path)
+            if "arr_0" in npz_data:
+                masks = npz_data["arr_0"]
+            elif len(npz_data.files) == 1:
+                masks = npz_data[npz_data.files[0]]
+            else:
+                raise ValueError(f"Mask npz must contain a single array or 'arr_0': {mask_path}")
+
+        if masks.ndim == 2:
+            masks = masks[None, ...]
+
+        return masks[indices]
+
+    def _load_mask_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:
+        """
+        Load mask data for all configured mask views at specified indices.
+        """
+        mask_data = {}
+
+        if not self.mask_path_pattern or "mask" not in self.modality_configs:
+            return mask_data
+
+        chunk_idx = episode_index // self.chunk_size
+        mask_keys = self.modality_configs["mask"].modality_keys
+
+        for mask_key in mask_keys:
+            mask_meta = self.modality_meta.get("mask", {}).get(mask_key, {})
+            original_key = mask_meta.get("original_key", mask_key)
+            mask_filename = self.mask_path_pattern.format(
+                episode_chunk=chunk_idx,
+                episode_index=episode_index,
+                mask_key=original_key,
+                video_key=original_key,
+            )
+            mask_path = self.dataset_path / mask_filename
+            mask_data[mask_key] = self._load_mask_file(mask_path, indices)
+
+        return mask_data
+
     def get_dataset_statistics(self) -> dict[str, Any]:
         """
         Extract dataset statistics for normalization from loaded metadata.
@@ -513,6 +564,14 @@ class LeRobotEpisodeLoader:
                 f"Video data for {key} has length {len(video_data[key])} but dataframe has length {len(df)}"
             )
             df[f"video.{key}"] = [frame for frame in video_data[key]]
+
+        # Load synchronized mask data
+        mask_data = self._load_mask_data(episode_id, np.arange(actual_length))
+        for key in mask_data.keys():
+            assert len(mask_data[key]) == len(df), (
+                f"Mask data for {key} has length {len(mask_data[key])} but dataframe has length {len(df)}"
+            )
+            df[f"mask.{key}"] = [mask for mask in mask_data[key]]
 
         return df
 

@@ -128,6 +128,7 @@ class Gr00tN1d6Processor(BaseProcessor):
         apply_sincos_state_encoding: bool = False,
         max_action_horizon: int = 40,
         use_albumentations: bool = False,
+        extra_augmentation_config: dict | None = None,
         use_relative_action: bool = False,
         embodiment_id_mapping: dict[str, int] | None = None,
         transformers_loading_kwargs: dict = {"trust_remote_code": True},
@@ -149,6 +150,7 @@ class Gr00tN1d6Processor(BaseProcessor):
         self.clip_outliers = clip_outliers
         self.apply_sincos_state_encoding = apply_sincos_state_encoding
         self.use_relative_action = use_relative_action
+        self.extra_augmentation_config = extra_augmentation_config
 
         # Save VLM settings
         self.formalize_language = formalize_language
@@ -186,6 +188,7 @@ class Gr00tN1d6Processor(BaseProcessor):
                     color_jitter_params,
                     shortest_image_edge,
                     crop_fraction,
+                    extra_augmentation_config=self.extra_augmentation_config,
                 )
             )
         else:
@@ -372,6 +375,7 @@ class Gr00tN1d6Processor(BaseProcessor):
         vlm_inputs = self._get_vlm_inputs(
             image_keys=image_keys,
             images=content.images,
+            masks=content.masks,
             image_transform=image_transform,
             language=language,
         )
@@ -392,6 +396,7 @@ class Gr00tN1d6Processor(BaseProcessor):
         self,
         image_keys: list[str],
         images: list[Image.Image],
+        masks: dict[str, list[np.ndarray]] | None,
         image_transform: transforms.Compose | A.Compose,
         language: str,
     ):
@@ -402,12 +407,21 @@ class Gr00tN1d6Processor(BaseProcessor):
             replay = None
             for view in image_keys:
                 assert view in images, f"{view} not in {images}"
+                if masks is not None:
+                    assert view in masks, f"{view} not in masks"
+                view_masks = masks.get(view) if masks else None
+                view_images = images[view]
+
                 # Apply transforms with replay for consistency
                 transformed_images, replay = apply_with_replay(
-                    image_transform, images[view], replay
+                    image_transform, view_images, view_masks, replay
                 )
                 temporal_stacked_images[view] = torch.stack(transformed_images)  # (T, C, H, W)
         else:
+            if masks is not None:
+                raise ValueError(
+                    "Mask transforms require albumentations. Set use_albumentations_transforms=True."
+                )
             # Use torchvision transforms
             for view in image_keys:
                 assert view in images, f"{view} not in {images}"
@@ -514,6 +528,7 @@ class Gr00tN1d6Processor(BaseProcessor):
                 "random_rotation_angle",
                 "color_jitter_params",
                 "use_relative_action",
+                "extra_augmentation_config",
             ]
             for key in override_keys:
                 if key in kwargs:

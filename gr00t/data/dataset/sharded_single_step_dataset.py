@@ -47,6 +47,7 @@ def extract_step_data(
 
     # Parse extracted data into VLAStepData structure
     video_data = step_data.get("video", {})
+    mask_data = step_data.get("mask", {})
     state_data = step_data.get("state", {})
     action_data = step_data.get("action", {})
     language_data = step_data.get("language", {})
@@ -55,6 +56,7 @@ def extract_step_data(
 
     vla_step_data = VLAStepData(
         images=video_data,
+        masks=mask_data if mask_data else None,
         states=state_data,
         actions=action_data,
         text=text,
