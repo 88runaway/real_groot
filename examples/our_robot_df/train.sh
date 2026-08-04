@@ -52,6 +52,8 @@ except (KeyError, TypeError):
     value = default
 if isinstance(value, bool):
     print(str(value).lower())
+elif isinstance(value, list):
+    print(",".join(str(v) for v in value))
 else:
     print(value)
 PY
@@ -91,6 +93,15 @@ DF_MIX_PROB="$(yaml_get diffusion_forcing.mix_prob "1.0")"
 DF_BLOCK_TIME_SAMPLING="$(yaml_get diffusion_forcing.block_time_sampling "monotone")"
 DF_REWEIGHT_GAMMA="$(yaml_get diffusion_forcing.reweight_gamma "0.5")"
 DF_PHASE_ALPHA="$(yaml_get diffusion_forcing.phase_alpha "1.0")"
+
+# Tactile 参数
+TAC_ENABLED="$(yaml_get tactile.enabled "false")"
+TAC_ENCODER_PATH="$(yaml_get tactile.encoder_path "")"
+TAC_SENSOR_NAME="$(yaml_get tactile.sensor_name "GelSightMini")"
+TAC_ENCODER_OUTPUT_DIM="$(yaml_get tactile.encoder_output_dim "1536")"
+TAC_FREEZE_BACKBONE="$(yaml_get tactile.freeze_backbone "true")"
+TAC_NUM_TOKENS="$(yaml_get tactile.num_tokens "2")"
+TAC_FUNC_AREA_INDICES="$(yaml_get tactile.func_area_indices "")"
 
 BRIGHTNESS="$(yaml_get augmentation.color_jitter.brightness "0.3")"
 CONTRAST="$(yaml_get augmentation.color_jitter.contrast "0.4")"
@@ -185,6 +196,30 @@ DF_FLAGS+=(
     --df-phase-alpha "${DF_PHASE_ALPHA}"
 )
 
+# Tactile flags
+TAC_FLAGS=()
+if [ "${TAC_ENABLED}" = "true" ]; then
+    TAC_FLAGS+=(--tactile-enabled)
+else
+    TAC_FLAGS+=(--no-tactile-enabled)
+fi
+if [ -n "${TAC_ENCODER_PATH}" ]; then
+    TAC_FLAGS+=(--tactile-encoder-path "${TAC_ENCODER_PATH}")
+fi
+TAC_FLAGS+=(
+    --tactile-sensor-name "${TAC_SENSOR_NAME}"
+    --tactile-encoder-output-dim "${TAC_ENCODER_OUTPUT_DIM}"
+    --tactile-num-tokens "${TAC_NUM_TOKENS}"
+)
+if [ -n "${TAC_FUNC_AREA_INDICES}" ]; then
+    TAC_FLAGS+=(--tactile-func-area-indices "${TAC_FUNC_AREA_INDICES}")
+fi
+if [ "${TAC_FREEZE_BACKBONE}" = "true" ]; then
+    TAC_FLAGS+=(--tactile-freeze-backbone)
+else
+    TAC_FLAGS+=(--no-tactile-freeze-backbone)
+fi
+
 LAUNCH_CMD=(
     torchrun --nproc_per_node="${NUM_GPUS}" --standalone
     "${SCRIPT_DIR}/launch_finetune_df.py"
@@ -213,6 +248,7 @@ LAUNCH_CMD=(
     --episode-sampling-rate "${EPISODE_SAMPLING_RATE}"
     "${MODEL_FLAGS[@]}"
     "${DF_FLAGS[@]}"
+    "${TAC_FLAGS[@]}"
 )
 
 export NUM_GPUS MAX_STEPS SAVE_STEPS GLOBAL_BATCH_SIZE
@@ -234,6 +270,8 @@ echo "[INFO] steps=${MAX_STEPS}, lr=${LEARNING_RATE}, batch=${GLOBAL_BATCH_SIZE}
 echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}"
 echo "[DF]   enabled=${DF_ENABLED}, block_size=${DF_BLOCK_SIZE}, mix_prob=${DF_MIX_PROB}"
 echo "[DF]   sampling=${DF_BLOCK_TIME_SAMPLING}, gamma=${DF_REWEIGHT_GAMMA}, phase_alpha=${DF_PHASE_ALPHA}"
+echo "[TAC]  enabled=${TAC_ENABLED}, encoder=${TAC_ENCODER_PATH:-none}, sensor=${TAC_SENSOR_NAME}, freeze=${TAC_FREEZE_BACKBONE}"
+echo "[TAC]  func_areas=${TAC_FUNC_AREA_INDICES:-auto}"
 echo "═══════════════════════════════════════════════════════════"
 
 cd "${REPO_DIR}"

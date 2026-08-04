@@ -37,9 +37,27 @@ diffusion_forcing:
   # monotone: 前面的 block 更早收敛，与推理时 pyramid schedule 对齐
   block_time_sampling: monotone
   # 损失重加权：补偿 monotone 下前 block 梯度覆盖不足
-  reweight_gamma: 0.5
+  reweight_gamma: 0.0
   # Beta(phase_alpha, 1) 控制 phase 分布，1.0 = Uniform
   phase_alpha: 1.0
+
+# ── 触觉注入配置 ──────────────────────────────────────────────────
+tactile:
+  enabled: true
+  encoder_type: ftp
+  # FTP 预训练权重目录 (包含 hpt_tokenizer/ 和 model.safetensors)
+  encoder_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/ftp_model
+  # 触觉传感器名称（用于加载对应的 T3 encoder checkpoint）
+  sensor_name: SharpaWave
+  # 输出维度必须等于 input_embedding_dim (1536)
+  encoder_output_dim: 1536
+  # 冻结 backbone（仅 output_proj 参与训练）
+  freeze_backbone: true
+  # 触觉 token 数量 (每个 function area 生成 1 token)
+  num_tokens: 2
+  # function area 索引 (对应 hpt_tactile_encoder.func_area_idx_embedding)
+  # place_sunscreen: left_gripper=24, right_gripper=25 (示例)
+  func_area_indices: [24, 25]
 
 # ── 训练超参 ──────────────────────────────────────────────────────
 training:

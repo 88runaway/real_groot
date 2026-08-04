@@ -50,6 +50,28 @@ class DFFinetuneConfig(FinetuneConfig):
     df_phase_alpha: float = 1.0
     """Beta distribution alpha for phase sampling in monotone mode."""
 
+    # Tactile injection parameters
+    tactile_enabled: bool = False
+    """Enable FTP tactile encoder injection."""
+
+    tactile_encoder_path: str = ""
+    """Path to FTP model checkpoint directory."""
+
+    tactile_sensor_name: str = "GelSightMini"
+    """Sensor name for T3 encoder checkpoint (e.g. GelSightMini, SharpaWave)."""
+
+    tactile_encoder_output_dim: int = 1536
+    """Output dim of tactile encoder (must match input_embedding_dim)."""
+
+    tactile_freeze_backbone: bool = True
+    """Freeze FTP backbone, only train output_proj."""
+
+    tactile_num_tokens: int = 2
+    """Number of tactile tokens (one per function area)."""
+
+    tactile_func_area_indices: str = ""
+    """Comma-separated function area indices (e.g. '24,25')."""
+
 
 def load_modality_config(modality_config_path: str):
     import importlib
@@ -130,6 +152,20 @@ if __name__ == "__main__":
     config.model.df_reweight_gamma = ft_config.df_reweight_gamma
     config.model.df_phase_alpha = ft_config.df_phase_alpha
 
+    # === Tactile injection parameters ===
+    config.model.use_tactile = ft_config.tactile_enabled
+    config.model.tactile_encoder_path = ft_config.tactile_encoder_path
+    config.model.tactile_sensor_name = ft_config.tactile_sensor_name
+    config.model.tactile_encoder_output_dim = ft_config.tactile_encoder_output_dim
+    config.model.tactile_freeze_backbone = ft_config.tactile_freeze_backbone
+    config.model.num_tactile_tokens = ft_config.tactile_num_tokens
+    if ft_config.tactile_func_area_indices:
+        config.model.tactile_func_area_indices = [
+            int(x.strip()) for x in ft_config.tactile_func_area_indices.split(",")
+        ]
+    else:
+        config.model.tactile_func_area_indices = None
+
     # Training config
     config.training.experiment_name = ft_config.experiment_name
     config.training.start_from_checkpoint = ft_config.base_model_path
@@ -160,5 +196,11 @@ if __name__ == "__main__":
     print(f"[DF] Diffusion Forcing enabled: {ft_config.df_enabled}")
     print(f"[DF] block_size={ft_config.df_block_size}, mix_prob={ft_config.df_mix_prob}")
     print(f"[DF] sampling={ft_config.df_block_time_sampling}, gamma={ft_config.df_reweight_gamma}")
+    print(f"[TAC] Tactile enabled: {ft_config.tactile_enabled}")
+    if ft_config.tactile_enabled:
+        print(f"[TAC] encoder_path={ft_config.tactile_encoder_path}")
+        print(f"[TAC] sensor={ft_config.tactile_sensor_name}")
+        print(f"[TAC] output_dim={ft_config.tactile_encoder_output_dim}, freeze={ft_config.tactile_freeze_backbone}")
+        print(f"[TAC] func_area_indices={ft_config.tactile_func_area_indices}")
 
     run(config)

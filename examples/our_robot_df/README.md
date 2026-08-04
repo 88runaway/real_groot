@@ -2,6 +2,8 @@
 
 基于 `our_robot` 标准配置，启用 **Block-wise Diffusion Forcing** 架构改进。
 
+改动： state原本会用timestep来adalayernorm，由于我们采用了df，每个action block的timestep都不同，因此state使用timestep=0
+
 ## 架构改进
 
 相比标准 GR00T flow matching，本版本实现了以下核心改进：

@@ -117,6 +117,16 @@ class Gr00tN1d7Config(PretrainedConfig):
     df_reweight_gamma: float = 0.5
     df_phase_alpha: float = 1.0
 
+    # Tactile injection parameters
+    use_tactile: bool = False
+    tactile_encoder_type: str = "ftp"
+    tactile_encoder_path: str = ""  # path to ftp_model checkpoint dir
+    tactile_sensor_name: str = "GelSightMini"  # sensor for T3 encoder
+    tactile_encoder_output_dim: int = 1536  # must match input_embedding_dim
+    tactile_freeze_backbone: bool = True
+    num_tactile_tokens: int = 2  # number of tactile tokens (one per function area)
+    tactile_func_area_indices: list[int] | None = None  # e.g. [24, 25] for left gripper areas
+
     # Training parameters
     tune_projector: bool = True
     tune_diffusion_model: bool = True

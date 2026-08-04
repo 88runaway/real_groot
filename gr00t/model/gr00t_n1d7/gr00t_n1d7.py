@@ -30,6 +30,7 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
+from gr00t.model.modules.ftp_encoder import FTPTactileEncoder
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,23 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         # State dropout parameters
         self.state_dropout_prob = config.state_dropout_prob
+
+        # Tactile encoder
+        self.use_tactile = config.use_tactile
+        if self.use_tactile:
+            self.tactile_encoder = FTPTactileEncoder(
+                output_dim=config.tactile_encoder_output_dim
+            )
+            if config.tactile_encoder_path:
+                self.tactile_encoder.load_pretrained(
+                    config.tactile_encoder_path,
+                    sensor_name=config.tactile_sensor_name,
+                    freeze_backbone=config.tactile_freeze_backbone,
+                )
+            self.num_tactile_tokens = config.num_tactile_tokens
+            self.tactile_func_area_indices = config.tactile_func_area_indices or list(
+                range(config.num_tactile_tokens)
+            )
 
         # Pin the time-sampling Beta to CPU/fp32 explicitly. The action head can
         # be instantiated under a meta / no_init_weights default-device context
@@ -244,14 +262,15 @@ class Gr00tN1d7ActionHead(nn.Module):
         if self.config.use_diffusion_forcing:
             # Per-token discretized timesteps: [B, action_horizon]
             t_discrete_per_token = (t_per_token.squeeze(-1) * self.num_timestep_buckets).long()
-            # Prepend a state token timestep (use mean block time)
-            state_t = t_discrete_per_token.float().mean(dim=1).long()
             action_features = self.action_encoder(noisy_trajectory, t_discrete_per_token, embodiment_id)
 
-            # For DiT: build per-token temb including state position
-            # state uses mean timestep, action uses per-block timestep
+            # Per-token temb for DiT:
+            # state = 0 (clean observation, no noise)
+            # tactile = 0 (clean conditioning signal)
+            # action = per-block timestep
+            state_t = torch.zeros(actions.shape[0], 1, device=device, dtype=torch.long)
             t_for_dit = torch.cat(
-                [state_t.unsqueeze(1), t_discrete_per_token], dim=1
+                [state_t, t_discrete_per_token], dim=1
             )  # [B, 1+action_horizon]
         else:
             t_discretized = (t * self.num_timestep_buckets).long()
@@ -264,8 +283,23 @@ class Gr00tN1d7ActionHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        # Join vision, language, state and action embedding along sequence dimension.
-        sa_embs = torch.cat((state_features, action_features), dim=1)
+        # Encode tactile and inject into sequence
+        tactile_features = self._encode_tactile(action_input, device)
+
+        # Join state, tactile (optional), and action along sequence dimension.
+        if tactile_features is not None:
+            sa_embs = torch.cat((state_features, tactile_features, action_features), dim=1)
+            # Tactile positions get zero timestep (pure conditioning, no flow-matching)
+            if self.config.use_diffusion_forcing:
+                nt = tactile_features.shape[1]
+                tac_t = torch.zeros(actions.shape[0], nt, device=device, dtype=torch.long)
+                t_for_dit = torch.cat(
+                    [t_for_dit[:, :1], tac_t, t_for_dit[:, 1:]], dim=1
+                )
+            elif t_for_dit.dim() == 1:
+                pass  # scalar timestep, no adjustment needed
+        else:
+            sa_embs = torch.cat((state_features, action_features), dim=1)
         vl_attn_mask = backbone_output.backbone_attention_mask
 
         if self.config.use_alternate_vl_dit:
@@ -378,6 +412,42 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         return t, t_per_token, loss_weights
 
+    def _encode_tactile(
+        self, action_input: BatchFeature, device: torch.device
+    ) -> torch.Tensor | None:
+        """Encode tactile images if available.
+
+        Looks for tactile image tensors in action_input and encodes each with
+        the corresponding func_area_idx from config.
+
+        Naming convention for tactile fields:
+            tactile_0, tactile_1, ... (matched to tactile_func_area_indices)
+            OR: tactile_left, tactile_right (legacy 2-finger mode)
+
+        Returns:
+            [B, num_tactile_tokens, input_embedding_dim] or None if tactile disabled.
+        """
+        if not self.use_tactile:
+            return None
+
+        tokens = []
+        for i, area_idx in enumerate(self.tactile_func_area_indices):
+            # Try numbered naming first, then legacy left/right
+            tactile_img = getattr(action_input, f"tactile_{i}", None)
+            if tactile_img is None and i == 0:
+                tactile_img = getattr(action_input, "tactile_left", None)
+            if tactile_img is None and i == 1:
+                tactile_img = getattr(action_input, "tactile_right", None)
+
+            if tactile_img is None:
+                return None
+
+            tok = self.tactile_encoder(tactile_img, func_area_idx=area_idx)  # (B, 1, D)
+            tokens.append(tok)
+
+        tactile_tokens = torch.cat(tokens, dim=1)  # (B, num_tactile_tokens, D)
+        return tactile_tokens.to(device=device, dtype=next(self.model.parameters()).dtype)
+
     def _blockwise_time_schedule(self, num_steps: int, num_blocks: int, device, dtype):
         """Build a pyramid time schedule for blockwise inference.
 
@@ -406,6 +476,7 @@ class Gr00tN1d7ActionHead(nn.Module):
         embodiment_id: torch.Tensor,
         backbone_output: BatchFeature,
         vel_strength: torch.Tensor,
+        tactile_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Blockwise pyramid denoising for diffusion forcing inference.
 
@@ -438,8 +509,8 @@ class Gr00tN1d7ActionHead(nn.Module):
             t_discrete = (t_per_token * self.num_timestep_buckets).long()
             t_discrete = t_discrete.unsqueeze(0).expand(batch_size, -1)  # [B, H]
 
-            # State token uses mean time
-            state_t = t_discrete.float().mean(dim=1).long()  # [B]
+            # State = 0 (clean observation)
+            state_t = torch.zeros(batch_size, 1, device=device, dtype=torch.long)
 
             action_features = self.action_encoder(actions, t_discrete, embodiment_id)
 
@@ -448,10 +519,18 @@ class Gr00tN1d7ActionHead(nn.Module):
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
 
-            sa_embs = torch.cat((state_features, action_features), dim=1)
+            if tactile_features is not None:
+                sa_embs = torch.cat((state_features, tactile_features, action_features), dim=1)
+            else:
+                sa_embs = torch.cat((state_features, action_features), dim=1)
 
-            # Build per-token timestep for DiT: [B, 1+H]
-            t_for_dit = torch.cat([state_t.unsqueeze(1), t_discrete], dim=1)
+            # Build per-token timestep for DiT: [B, 1+(nt)+H]
+            # state=0, tactile=0, action=per-block time
+            t_for_dit = torch.cat([state_t, t_discrete], dim=1)
+            if tactile_features is not None:
+                nt = tactile_features.shape[1]
+                tac_t = torch.zeros(batch_size, nt, device=device, dtype=torch.long)
+                t_for_dit = torch.cat([t_for_dit[:, :1], tac_t, t_for_dit[:, 1:]], dim=1)
 
             if self.config.use_alternate_vl_dit:
                 model_output = self.model(
@@ -585,10 +664,14 @@ class Gr00tN1d7ActionHead(nn.Module):
             ] = ramp[None, :, None].to(device)
 
         # Run denoising steps.
+        # Encode tactile for inference
+        tactile_features = self._encode_tactile(action_input, device)
+
         if self.config.use_diffusion_forcing:
             actions = self._blockwise_denoise(
                 actions, state_features, vl_embeds,
                 embodiment_id, backbone_output, vel_strength,
+                tactile_features=tactile_features,
             )
         else:
             for t in range(self.num_inference_timesteps):
@@ -606,8 +689,11 @@ class Gr00tN1d7ActionHead(nn.Module):
                     pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                     action_features = action_features + pos_embs
 
-                # Join vision, language, state and action embedding along sequence dimension.
-                sa_embs = torch.cat((state_features, action_features), dim=1)
+                # Join state, tactile (optional), and action along sequence dimension.
+                if tactile_features is not None:
+                    sa_embs = torch.cat((state_features, tactile_features, action_features), dim=1)
+                else:
+                    sa_embs = torch.cat((state_features, action_features), dim=1)
 
                 # Run model forward.
                 if self.config.use_alternate_vl_dit:
