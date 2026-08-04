@@ -1,0 +1,1 @@
+source /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T/.venv/bin/activate

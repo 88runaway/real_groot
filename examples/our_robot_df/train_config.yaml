@@ -1,0 +1,82 @@
+# ════════════════════════════════════════════════════════════════
+#  GR00T-DF 微调训练配置 - Block-wise Diffusion Forcing
+#
+#  基于 our_robot 标准配置，启用 Diffusion Forcing 架构改进：
+#  - 块级独立噪声调度 (monotone pyramid)
+#  - 推理时金字塔去噪，早期 block 先收敛
+#  - 损失重加权补偿早期 block 梯度不足
+#
+#  数据集: lift_can_orig
+#  规模:   99 episodes, ~40K frames, 30 FPS
+#  任务:   单手立瓶（短时操作 ~15s/集）
+# ════════════════════════════════════════════════════════════════
+
+# ── 路径 ─────────────────────────────────────────────────────────
+paths:
+  base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
+  backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/lift_can_groot/lift_can_orig
+  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot_df
+
+# ── 任务 ─────────────────────────────────────────────────────────
+task:
+  description: "Stand the bottle upright."
+  experiment_name: our_robot_df
+
+# ── 动作 chunk 配置 ──────────────────────────────────────────────
+action:
+  chunk_size: 40
+
+# ── Diffusion Forcing 配置 ────────────────────────────────────────
+diffusion_forcing:
+  enabled: true
+  # action_horizon=40, block_size=5 → 8 blocks
+  block_size: 5
+  # 训练时 100% 使用 DF（不与标准 FM 混合）
+  mix_prob: 1.0
+  # monotone: 前面的 block 更早收敛，与推理时 pyramid schedule 对齐
+  block_time_sampling: monotone
+  # 损失重加权：补偿 monotone 下前 block 梯度覆盖不足
+  reweight_gamma: 0.5
+  # Beta(phase_alpha, 1) 控制 phase 分布，1.0 = Uniform
+  phase_alpha: 1.0
+
+# ── 训练超参 ──────────────────────────────────────────────────────
+training:
+  max_steps: 15000
+  save_steps: 1000
+  save_total_limit: 10
+  learning_rate: 6.0e-5
+  weight_decay: 1.0e-5
+  warmup_ratio: 0.1
+  gradient_accumulation_steps: 1
+  global_batch_size: 256
+  dataloader_num_workers: 16
+  shard_size: 1024
+  num_shards_per_epoch: 100000
+  episode_sampling_rate: 0.1
+
+# ── 模型微调策略 ───────────────────────────────────────────────────
+model:
+  tune_llm: true
+  tune_visual: false
+  tune_projector: true
+  tune_diffusion_model: true
+  state_dropout_prob: 0.25
+
+# ── 数据增强 ──────────────────────────────────────────────────────
+augmentation:
+  color_jitter:
+    brightness: 0.3
+    contrast: 0.4
+    saturation: 0.5
+    hue: 0.08
+  use_percentiles: true
+
+# ── 硬件 & 日志 ───────────────────────────────────────────────────
+hardware:
+  num_gpus: 8
+
+logging:
+  use_wandb: true
+  wandb_project: finetune-gr00t-n1d7-df

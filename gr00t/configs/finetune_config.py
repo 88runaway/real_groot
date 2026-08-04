@@ -191,6 +191,10 @@ class FinetuneConfig:
     silently merging with a previous experiment. Incompatible with
     ``save_only_model=True`` (enforced by ``experiment.run``)."""
 
+    backbone_model_name: str = "nvidia/Cosmos-Reason2-2B"
+    """HuggingFace repo ID or local path to the VLM backbone (Cosmos-Reason2-2B).
+    Defaults to the HF hub ID; set to a local directory to avoid network access."""
+
     skip_weight_loading: bool = False
     """If True, skip loading model weights from base_model_path (architecture only).
     The processor (tokenizer/config) is still loaded from base_model_path.

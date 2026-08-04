@@ -228,15 +228,35 @@ class Gr00tN1d7ActionHead(nn.Module):
         # Embed noised action trajectory.
         actions = action_input.action
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]  # shape (B,1,1) for broadcast
 
-        noisy_trajectory = (1 - t) * noise + t * actions
+        if self.config.use_diffusion_forcing:
+            t, t_per_token, loss_weights = self._sample_df_time(
+                actions.shape[0], actions.shape[1], device, actions.dtype
+            )
+        else:
+            t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+            t_per_token = t[:, None, None]  # (B,1,1) for broadcast
+            loss_weights = None
+
+        noisy_trajectory = (1 - t_per_token) * noise + t_per_token * actions
         velocity = actions - noise
 
-        # Convert (continuous) t -> discrete if needed
-        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
-        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+        if self.config.use_diffusion_forcing:
+            # Per-token discretized timesteps: [B, action_horizon]
+            t_discrete_per_token = (t_per_token.squeeze(-1) * self.num_timestep_buckets).long()
+            # Prepend a state token timestep (use mean block time)
+            state_t = t_discrete_per_token.float().mean(dim=1).long()
+            action_features = self.action_encoder(noisy_trajectory, t_discrete_per_token, embodiment_id)
+
+            # For DiT: build per-token temb including state position
+            # state uses mean timestep, action uses per-block timestep
+            t_for_dit = torch.cat(
+                [state_t.unsqueeze(1), t_discrete_per_token], dim=1
+            )  # [B, 1+action_horizon]
+        else:
+            t_discretized = (t * self.num_timestep_buckets).long()
+            action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+            t_for_dit = t_discretized
 
         # Maybe add position embedding.
         if self.config.add_pos_embed:
@@ -255,7 +275,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
+                timestep=t_for_dit,
                 return_all_hidden_states=True,
                 image_mask=image_mask,
                 backbone_attention_mask=backbone_attention_mask,
@@ -265,7 +285,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
+                timestep=t_for_dit,
                 return_all_hidden_states=True,
             )
 
@@ -275,6 +295,10 @@ class Gr00tN1d7ActionHead(nn.Module):
         # Slice out only the action portion of pred and target.
         action_mask = action_input.action_mask
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
+
+        if loss_weights is not None:
+            action_loss = action_loss * loss_weights
+
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
         return {
@@ -284,6 +308,174 @@ class Gr00tN1d7ActionHead(nn.Module):
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }
+
+    def _sample_df_time(self, batch_size, action_horizon, device, dtype):
+        """Sample block-wise diffusion forcing timesteps.
+
+        Returns:
+            t: [B] representative scalar time (for compatibility)
+            t_per_token: [B, action_horizon, 1] per-token time for noise mixing
+            loss_weights: [B, action_horizon, 1] per-block loss reweighting or None
+        """
+        block_size = self.config.df_block_size
+        num_blocks = action_horizon // block_size
+        assert action_horizon % block_size == 0, (
+            f"action_horizon ({action_horizon}) must be divisible by df_block_size ({block_size})"
+        )
+
+        use_df = torch.rand(batch_size, device=device) < self.config.df_mix_prob
+
+        if self.config.df_block_time_sampling == "monotone":
+            # Monotone scheduling: earlier blocks are cleaner
+            phase_dist = Beta(
+                torch.tensor(float(self.config.df_phase_alpha), device="cpu"),
+                torch.tensor(1.0, device="cpu"),
+            )
+            phase = phase_dist.sample([batch_size]).to(device, dtype=dtype)  # [B]
+
+            block_indices = torch.arange(num_blocks, device=device, dtype=dtype)  # [nb]
+            # t_block[k] = clip(1 - phase * num_blocks / (k+1), 0, 1) * noise_s
+            t_blocks = (
+                1.0 - phase.unsqueeze(1) * num_blocks / (block_indices.unsqueeze(0) + 1.0)
+            ).clamp(0, 1) * self.config.noise_s  # [B, nb]
+
+            # Loss reweighting: compensate for early blocks seeing less gradient
+            if self.config.df_reweight_gamma > 0:
+                weights = (num_blocks / (block_indices + 1.0)) ** self.config.df_reweight_gamma
+                weights = weights.unsqueeze(0).expand(batch_size, -1)  # [B, nb]
+                weights = weights.repeat_interleave(block_size, dim=1).unsqueeze(-1)  # [B, H, 1]
+                loss_weights = weights.to(dtype=dtype)
+            else:
+                loss_weights = None
+        else:
+            # Independent: each block samples independently
+            t_blocks = self.beta_dist.sample([batch_size, num_blocks]).to(device, dtype=dtype)
+            t_blocks = (1 - t_blocks) * self.config.noise_s  # [B, nb]
+            loss_weights = None
+
+        # Fallback: standard flow matching time (single scalar per sample)
+        t_standard = self.sample_time(batch_size, device=device, dtype=dtype)  # [B]
+
+        # Expand block times to per-token: [B, nb] -> [B, action_horizon]
+        t_per_token_df = t_blocks.repeat_interleave(block_size, dim=1)  # [B, H]
+
+        # Mix DF vs standard
+        t_per_token_standard = t_standard.unsqueeze(1).expand(-1, action_horizon)  # [B, H]
+        t_per_token = torch.where(
+            use_df.unsqueeze(1), t_per_token_df, t_per_token_standard
+        )  # [B, H]
+
+        # Representative scalar time
+        t = t_per_token.mean(dim=1)  # [B]
+
+        # Reshape for noise mixing
+        t_per_token = t_per_token.unsqueeze(-1)  # [B, H, 1]
+
+        if loss_weights is not None:
+            loss_weights = torch.where(
+                use_df.unsqueeze(1).unsqueeze(2), loss_weights, torch.ones_like(loss_weights)
+            )
+
+        return t, t_per_token, loss_weights
+
+    def _blockwise_time_schedule(self, num_steps: int, num_blocks: int, device, dtype):
+        """Build a pyramid time schedule for blockwise inference.
+
+        Each block k starts at noise level 0 and becomes fully clean at
+        step = ceil((k+1)/num_blocks * num_steps). All blocks are denoised
+        simultaneously but at different rates, forming a "pyramid" schedule.
+
+        Returns:
+            schedule: [num_steps+1, num_blocks] time values from 0 (noise) to 1 (clean)
+        """
+        schedule = torch.zeros(num_steps + 1, num_blocks, device=device, dtype=dtype)
+        for k in range(num_blocks):
+            clean_step = int(((k + 1) / num_blocks) * num_steps)
+            for s in range(num_steps + 1):
+                if s <= clean_step:
+                    schedule[s, k] = s / max(clean_step, 1)
+                else:
+                    schedule[s, k] = 1.0
+        return schedule
+
+    def _blockwise_denoise(
+        self,
+        actions: torch.Tensor,
+        state_features: torch.Tensor,
+        vl_embeds: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        backbone_output: BatchFeature,
+        vel_strength: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blockwise pyramid denoising for diffusion forcing inference.
+
+        Instead of uniform Euler steps, different blocks progress at different rates.
+        Earlier blocks are denoised faster (pyramid schedule).
+        """
+        batch_size = actions.shape[0]
+        device = actions.device
+        dtype = actions.dtype
+        action_horizon = self.config.action_horizon
+        block_size = self.config.df_block_size
+        num_blocks = action_horizon // block_size
+        num_steps = self.num_inference_timesteps
+
+        schedule = self._blockwise_time_schedule(num_steps, num_blocks, device, dtype)
+
+        for step in range(num_steps):
+            # Current time per block: [num_blocks]
+            t_curr = schedule[step]      # where each block currently is
+            t_next = schedule[step + 1]  # where each block should go
+
+            # Per-block dt
+            dt_blocks = t_next - t_curr  # [num_blocks]
+
+            # Expand to per-token: [action_horizon]
+            t_per_token = t_curr.repeat_interleave(block_size)  # [H]
+            dt_per_token = dt_blocks.repeat_interleave(block_size)  # [H]
+
+            # Discretize for encoder: [B, H]
+            t_discrete = (t_per_token * self.num_timestep_buckets).long()
+            t_discrete = t_discrete.unsqueeze(0).expand(batch_size, -1)  # [B, H]
+
+            # State token uses mean time
+            state_t = t_discrete.float().mean(dim=1).long()  # [B]
+
+            action_features = self.action_encoder(actions, t_discrete, embodiment_id)
+
+            if self.config.add_pos_embed:
+                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+                action_features = action_features + pos_embs
+
+            sa_embs = torch.cat((state_features, action_features), dim=1)
+
+            # Build per-token timestep for DiT: [B, 1+H]
+            t_for_dit = torch.cat([state_t.unsqueeze(1), t_discrete], dim=1)
+
+            if self.config.use_alternate_vl_dit:
+                model_output = self.model(
+                    hidden_states=sa_embs,
+                    encoder_hidden_states=vl_embeds,
+                    timestep=t_for_dit,
+                    image_mask=backbone_output.image_mask,
+                    backbone_attention_mask=backbone_output.backbone_attention_mask,
+                )
+            else:
+                model_output = self.model(
+                    hidden_states=sa_embs,
+                    encoder_hidden_states=vl_embeds,
+                    timestep=t_for_dit,
+                )
+
+            pred = self.action_decoder(model_output, embodiment_id)
+            pred_velocity = pred[:, -action_horizon:]
+
+            # Per-token Euler integration with block-specific dt
+            dt_expanded = dt_per_token.unsqueeze(0).unsqueeze(-1)  # [1, H, 1]
+            actions = actions + dt_expanded * pred_velocity * vel_strength
+
+        return actions
 
     def _encode_features(
         self, backbone_output: BatchFeature, action_input: BatchFeature
@@ -352,7 +544,6 @@ class Gr00tN1d7ActionHead(nn.Module):
             device=device,
         )
 
-        dt = 1.0 / self.num_inference_timesteps
         vel_strength = torch.ones_like(actions)
 
         if "action" in action_input:
@@ -394,45 +585,51 @@ class Gr00tN1d7ActionHead(nn.Module):
             ] = ramp[None, :, None].to(device)
 
         # Run denoising steps.
-        for t in range(self.num_inference_timesteps):
-            t_cont = t / float(self.num_inference_timesteps)  # e.g. goes 0, 1/N, 2/N, ...
-            t_discretized = int(t_cont * self.num_timestep_buckets)
-
-            # Embed noised action trajectory.
-            timesteps_tensor = torch.full(
-                size=(batch_size,), fill_value=t_discretized, device=device
+        if self.config.use_diffusion_forcing:
+            actions = self._blockwise_denoise(
+                actions, state_features, vl_embeds,
+                embodiment_id, backbone_output, vel_strength,
             )
-            action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
-            # Add position embedding.
-            if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-                action_features = action_features + pos_embs
+        else:
+            for t in range(self.num_inference_timesteps):
+                t_cont = t / float(self.num_inference_timesteps)  # e.g. goes 0, 1/N, 2/N, ...
+                t_discretized = int(t_cont * self.num_timestep_buckets)
 
-            # Join vision, language, state and action embedding along sequence dimension.
-            sa_embs = torch.cat((state_features, action_features), dim=1)
-
-            # Run model forward.
-            if self.config.use_alternate_vl_dit:
-                model_output = self.model(
-                    hidden_states=sa_embs,
-                    encoder_hidden_states=vl_embeds,
-                    timestep=timesteps_tensor,
-                    image_mask=backbone_output.image_mask,
-                    backbone_attention_mask=backbone_output.backbone_attention_mask,
+                # Embed noised action trajectory.
+                timesteps_tensor = torch.full(
+                    size=(batch_size,), fill_value=t_discretized, device=device
                 )
-            else:
-                model_output = self.model(
-                    hidden_states=sa_embs,
-                    encoder_hidden_states=vl_embeds,
-                    timestep=timesteps_tensor,
-                )
-            pred = self.action_decoder(model_output, embodiment_id)
+                action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
+                # Add position embedding.
+                if self.config.add_pos_embed:
+                    pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                    pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+                    action_features = action_features + pos_embs
 
-            pred_velocity = pred[:, -self.action_horizon :]
+                # Join vision, language, state and action embedding along sequence dimension.
+                sa_embs = torch.cat((state_features, action_features), dim=1)
 
-            # Update actions using euler integration.
-            actions = actions + dt * pred_velocity * vel_strength
+                # Run model forward.
+                if self.config.use_alternate_vl_dit:
+                    model_output = self.model(
+                        hidden_states=sa_embs,
+                        encoder_hidden_states=vl_embeds,
+                        timestep=timesteps_tensor,
+                        image_mask=backbone_output.image_mask,
+                        backbone_attention_mask=backbone_output.backbone_attention_mask,
+                    )
+                else:
+                    model_output = self.model(
+                        hidden_states=sa_embs,
+                        encoder_hidden_states=vl_embeds,
+                        timestep=timesteps_tensor,
+                    )
+                pred = self.action_decoder(model_output, embodiment_id)
+
+                pred_velocity = pred[:, -self.action_horizon :]
+
+                # Update actions using euler integration.
+                actions = actions + (1.0 / self.num_inference_timesteps) * pred_velocity * vel_strength
 
         return BatchFeature(
             data={
@@ -488,13 +685,13 @@ class Gr00tN1d7ActionHead(nn.Module):
 
 
 def get_backbone_cls(config: Gr00tN1d7Config):
-    if "nvidia/Cosmos-Reason2" in config.model_name or "Qwen/Qwen3-VL" in config.model_name:
+    if config.backbone_model_type == "qwen":
         # We import here as Qwen3Backbone depends on newer transformers versions than the rest of the code.
         from gr00t.model.modules.qwen3_backbone import Qwen3Backbone
 
         return Qwen3Backbone
     else:
-        raise ValueError(f"Unsupported model name: {config.model_name}")
+        raise ValueError(f"Unsupported backbone model type: {config.backbone_model_type}")
 
 
 class Gr00tN1d7(PreTrainedModel):

@@ -166,8 +166,12 @@ def calculate_dataset_statistics(
         features = list(all_low_dim_data.columns)
     for le_modality in features:
         print(f"Computing statistics for {le_modality}...")
+        def _to_flat_array(x):
+            v = x.tolist() if isinstance(x, np.ndarray) else x
+            return np.atleast_1d(np.array(v, dtype=np.float32)).flatten()
+
         np_data = np.vstack(
-            [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
+            [_to_flat_array(x) for x in all_low_dim_data[le_modality]]
         )
         dataset_statistics[le_modality] = dict(
             mean=np.mean(np_data, axis=0).tolist(),

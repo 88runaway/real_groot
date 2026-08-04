@@ -841,8 +841,11 @@ class Gr00tN1d7Processor(BaseProcessor):
 
         with open(config_file, "r") as f:
             config = json.load(f)
-        with open(statistics_file, "r") as f:
-            statistics = json.load(f)
+        if statistics_file.exists():
+            with open(statistics_file, "r") as f:
+                statistics = json.load(f)
+        else:
+            statistics = None
         if embodiment_id_file.exists():
             with open(embodiment_id_file, "r") as f:
                 embodiment_id_mapping = json.load(f)

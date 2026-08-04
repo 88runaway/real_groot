@@ -1,0 +1,83 @@
+# ════════════════════════════════════════════════════════════════
+#  GR00T 微调训练配置 - 双臂 RealMan（仅右臂）
+#
+#  数据集: lift_can_orig
+#  规模:   99 episodes, ~40K frames, 30 FPS
+#  任务:   单手立瓶（短时操作 ~15s/集）
+# ════════════════════════════════════════════════════════════════
+
+# ── 路径 ─────────────────────────────────────────────────────────
+paths:
+  base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
+  backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/lift_can_groot/lift_can_orig
+  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot
+
+# ── 任务 ─────────────────────────────────────────────────────────
+task:
+  description: "Stand the bottle upright."
+  experiment_name: our_robot_right_arm
+
+# ── 动作 chunk 配置 ──────────────────────────────────────────────
+action:
+  # chunk_size = 预测未来 N 步动作
+  # 官方 DROID/G1 用 40，对 30FPS 约 1.33s 预测窗口
+  # 你的任务是短时精细操作(立瓶)，16 即可覆盖关键动作段
+  # 如果任务包含较长的接近-抓取-放置链，可改为 32
+  chunk_size: 40
+
+# ── 训练超参 ──────────────────────────────────────────────────────
+training:
+  # 99集/40K帧 是小数据集，主要风险是过拟合
+  # batch_size=32 时 1 epoch ≈ 1273 steps
+  # 5000 steps ≈ 4 epochs，足够收敛又不至于过拟合
+  max_steps: 15000
+
+  # 密集保存，方便挑选最优 checkpoint
+  save_steps: 1000
+  save_total_limit: 10
+
+  # lr: 小数据建议比默认 1e-4 低，防止灾难性遗忘
+  # 2e-5 ~ 5e-5 是 3B 模型小数据微调的安全区间
+  learning_rate: 6.0e-5
+  weight_decay: 1.0e-5
+  warmup_ratio: 0.1      # 小数据多 warmup 一点更稳
+  gradient_accumulation_steps: 1
+
+  # batch_size: 小数据不需要太大，32 即可
+  # 太大(如256)会导致每 epoch 只有 ~159 steps，难以稳定优化
+  global_batch_size: 256
+  dataloader_num_workers: 16
+
+  shard_size: 1024
+  num_shards_per_epoch: 100000
+  episode_sampling_rate: 0.1
+
+# ── 模型微调策略 ───────────────────────────────────────────────────
+model:
+  # 小数据微调核心原则：只解冻必要的层
+  tune_llm: true            # 不动！3B LLM 参数量大，99集不够训
+  tune_visual: false          # 不动！视觉编码器泛化性好，小数据微调会退化
+  tune_projector: true        # 开！适配新模态/embodiment 的关键层
+  tune_diffusion_model: true  # 开！动作解码器是微调核心
+
+  # state dropout: 小数据适当加大，防止模型依赖状态走捷径
+  # 0.2~0.3 均可，推荐先 0.25 试试
+  state_dropout_prob: 0.25
+
+# ── 数据增强 ──────────────────────────────────────────────────────
+augmentation:
+  color_jitter:
+    brightness: 0.3
+    contrast: 0.4
+    saturation: 0.5
+    hue: 0.08
+  use_percentiles: true
+
+# ── 硬件 & 日志 ───────────────────────────────────────────────────
+hardware:
+  num_gpus: 8
+
+logging:
+  use_wandb: true
+  wandb_project: finetune-gr00t-n1d7

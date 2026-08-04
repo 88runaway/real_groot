@@ -1,0 +1,35 @@
+{
+    "state": {
+        "right_arm": {
+            "start": 29,
+            "end": 36
+        },
+        "right_hand": {
+            "start": 36,
+            "end": 58
+        }
+    },
+    "action": {
+        "right_arm": {
+            "start": 29,
+            "end": 36
+        },
+        "right_hand": {
+            "start": 36,
+            "end": 58
+        }
+    },
+    "video": {
+        "ego": {
+            "original_key": "observation.images.left_top"
+        },
+        "right_wrist": {
+            "original_key": "observation.images.right_wrist"
+        }
+    },
+    "annotation": {
+        "human.task_description": {
+            "original_key": "annotation.human.task_description"
+        }
+    }
+}

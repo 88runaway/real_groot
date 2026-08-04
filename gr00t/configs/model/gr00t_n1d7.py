@@ -109,6 +109,14 @@ class Gr00tN1d7Config(PretrainedConfig):
     noise_s: float = 0.999
     num_timestep_buckets: int = 1000
 
+    # Diffusion Forcing parameters
+    use_diffusion_forcing: bool = False
+    df_block_size: int = 5
+    df_mix_prob: float = 1.0
+    df_block_time_sampling: str = "monotone"  # "monotone" or "independent"
+    df_reweight_gamma: float = 0.5
+    df_phase_alpha: float = 1.0
+
     # Training parameters
     tune_projector: bool = True
     tune_diffusion_model: bool = True

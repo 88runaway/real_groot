@@ -15,6 +15,7 @@ EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
 DS_WEIGHTS_ALPHA="${DS_WEIGHTS_ALPHA:-}"
 
 BASE_MODEL_PATH=""
+BACKBONE_MODEL_NAME=""
 DATASET_PATH=""
 MODALITY_CONFIG_PATH=""
 EMBODIMENT_TAG=""
@@ -52,6 +53,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --base-model-path)
             BASE_MODEL_PATH="$2"
+            shift 2
+            ;;
+        --backbone-model-name)
+            BACKBONE_MODEL_NAME="$2"
             shift 2
             ;;
         --dataset-path)
@@ -163,6 +168,9 @@ LAUNCH_CMD=(
 
 if [ -n "$MODALITY_CONFIG_PATH" ]; then
     LAUNCH_CMD+=(--modality_config_path "$MODALITY_CONFIG_PATH")
+fi
+if [ -n "$BACKBONE_MODEL_NAME" ]; then
+    LAUNCH_CMD+=(--backbone_model_name "$BACKBONE_MODEL_NAME")
 fi
 if [ -n "$EXPERIMENT_NAME" ]; then
     LAUNCH_CMD+=(--experiment_name "$EXPERIMENT_NAME")

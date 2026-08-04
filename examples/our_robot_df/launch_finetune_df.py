@@ -1,23 +1,12 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+Launch finetuning with Block-wise Diffusion Forcing for GR00T N1.7.
 
-# Launch finetuning for N1.7 on "single node".
-# This script tries to provide a similar user experience as current OSS.
+在标准 launch_finetune 基础上，注入 Diffusion Forcing 配置到 model config 中。
+"""
 
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import tyro
@@ -27,7 +16,41 @@ from gr00t.configs.finetune_config import FinetuneConfig
 from gr00t.experiment.experiment import run
 
 
-# Make sure the user provided modality config is registered.
+@dataclass
+class DiffusionForcingConfig:
+    """Diffusion Forcing specific parameters."""
+
+    enabled: bool = True
+    block_size: int = 5
+    mix_prob: float = 1.0
+    block_time_sampling: str = "monotone"
+    reweight_gamma: float = 0.5
+    phase_alpha: float = 1.0
+
+
+@dataclass
+class DFFinetuneConfig(FinetuneConfig):
+    """FinetuneConfig extended with Diffusion Forcing parameters."""
+
+    df_enabled: bool = True
+    """Enable block-wise diffusion forcing."""
+
+    df_block_size: int = 5
+    """Number of action tokens per block."""
+
+    df_mix_prob: float = 1.0
+    """Probability of using DF vs standard flow matching during training."""
+
+    df_block_time_sampling: str = "monotone"
+    """Block time sampling strategy: 'monotone' or 'independent'."""
+
+    df_reweight_gamma: float = 0.5
+    """Loss reweighting gamma for monotone scheduling."""
+
+    df_phase_alpha: float = 1.0
+    """Beta distribution alpha for phase sampling in monotone mode."""
+
+
 def load_modality_config(modality_config_path: str):
     import importlib
     import sys
@@ -42,17 +65,15 @@ def load_modality_config(modality_config_path: str):
 
 
 if __name__ == "__main__":
-    # Set LOGURU_LEVEL environment variable if not already set (default: INFO)
     if "LOGURU_LEVEL" not in os.environ:
         os.environ["LOGURU_LEVEL"] = "INFO"
-    # Use tyro for clean CLI
-    ft_config = tyro.cli(FinetuneConfig, description=__doc__)
+
+    ft_config = tyro.cli(DFFinetuneConfig, description=__doc__)
     from gr00t.data.embodiment_tags import EmbodimentTag
 
     ft_config.embodiment_tag = EmbodimentTag.resolve(ft_config.embodiment_tag)
     embodiment_tag = ft_config.embodiment_tag.value
 
-    # all rank workers should register for the modality config
     if ft_config.modality_config_path is not None:
         load_modality_config(ft_config.modality_config_path)
 
@@ -74,7 +95,7 @@ if __name__ == "__main__":
     )
     config.load_config_path = None
 
-    # overwrite with finetune config supplied by the user
+    # Standard finetune config mapping
     config.model.tune_llm = ft_config.tune_llm
     config.model.tune_visual = ft_config.tune_visual
     config.model.tune_projector = ft_config.tune_projector
@@ -101,6 +122,15 @@ if __name__ == "__main__":
     config.model.backbone_trainable_params_fp32 = True
     config.model.use_relative_action = True
 
+    # === Diffusion Forcing parameters ===
+    config.model.use_diffusion_forcing = ft_config.df_enabled
+    config.model.df_block_size = ft_config.df_block_size
+    config.model.df_mix_prob = ft_config.df_mix_prob
+    config.model.df_block_time_sampling = ft_config.df_block_time_sampling
+    config.model.df_reweight_gamma = ft_config.df_reweight_gamma
+    config.model.df_phase_alpha = ft_config.df_phase_alpha
+
+    # Training config
     config.training.experiment_name = ft_config.experiment_name
     config.training.start_from_checkpoint = ft_config.base_model_path
     config.training.optim = "adamw_torch"
@@ -126,5 +156,9 @@ if __name__ == "__main__":
     config.training.save_only_model = ft_config.save_only_model
     config.training.resume_from_checkpoint = ft_config.resume_from_checkpoint
     config.training.skip_weight_loading = ft_config.skip_weight_loading
+
+    print(f"[DF] Diffusion Forcing enabled: {ft_config.df_enabled}")
+    print(f"[DF] block_size={ft_config.df_block_size}, mix_prob={ft_config.df_mix_prob}")
+    print(f"[DF] sampling={ft_config.df_block_time_sampling}, gamma={ft_config.df_reweight_gamma}")
 
     run(config)
