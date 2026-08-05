@@ -6,10 +6,20 @@
 #  - 推理时金字塔去噪，早期 block 先收敛
 #  - 损失重加权补偿早期 block 梯度不足
 #
+#  单臂/双臂切换:
+#    单臂(右): modality_config = our_robot_config.py + modality.json (默认)
+#    双臂:     modality_config = our_robot_bimanual_config.py + modality_bimanual.json
+#    在 train.sh 中通过下面的 arm_mode 选项设置
+#
 #  数据集: lift_can_orig
 #  规模:   99 episodes, ~40K frames, 30 FPS
 #  任务:   单手立瓶（短时操作 ~15s/集）
 # ════════════════════════════════════════════════════════════════
+
+# ── 手臂模式 ──────────────────────────────────────────────────────
+# "right" = 仅右臂 (29维 action: 右臂7D + 右手22D)
+# "bimanual" = 双臂 (58维 action: 左臂7D + 左手22D + 右臂7D + 右手22D)
+arm_mode: right
 
 # ── 路径 ─────────────────────────────────────────────────────────
 paths:
@@ -53,11 +63,26 @@ tactile:
   encoder_output_dim: 1536
   # 冻结 backbone（仅 output_proj 参与训练）
   freeze_backbone: true
-  # 触觉 token 数量 (每个 function area 生成 1 token)
-  num_tokens: 2
-  # function area 索引 (对应 hpt_tactile_encoder.func_area_idx_embedding)
-  # place_sunscreen: left_gripper=24, right_gripper=25 (示例)
-  func_area_indices: [24, 25]
+  # 每个手指图像 resize 目标大小 (FTP encoder expects 224×224)
+  target_size: 224
+
+  # ── 手指选择（掩码格式）──
+  # 格式: [拇指, 食指, 中指, 无名指, 小指], 1=使用, 0=不使用
+  right_fingers: [1, 1, 1, 0, 0]
+  left_fingers:  [0, 0, 0, 0, 0]
+
+  # 每个选中手指对应的 FTP function area 索引
+  # 顺序对应所有 mask=1 的手指（先右手再左手）
+  # 如 right=[1,1,0,0,0] → 右手拇指=24, 右手食指=25
+  func_area_indices: [24, 25,26]
+
+  # ── 触觉注意力控制 ──
+  # block_aligned: true → action block k 仅 attend 对应的 tactile block k（时序局部 conditioning）
+  #   适用于 diffusion forcing 训练；推理时自动禁用（所有 block 共享触觉）
+  block_aligned: true
+  # attend_self: false → 触觉 token 之间不互相 attend（纯被动 KV 注入模式）
+  #   ftp 输出 1 token/指，互相 attend 无实际意义，设 false 减少冗余计算
+  attend_self: false
 
 # ── 训练超参 ──────────────────────────────────────────────────────
 training:

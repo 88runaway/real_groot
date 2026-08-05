@@ -328,6 +328,12 @@ class Gr00tN1d7Processor(BaseProcessor):
             model_type=model_type,
             transformers_loading_kwargs=transformers_loading_kwargs,
         )
+
+        # Tactile deformation image preprocessing (set via set_tactile_config)
+        self.tactile_num_fingers: int | None = None
+        self.tactile_finger_indices: list[int] | None = None
+        self.tactile_target_size: int = 224
+
         self.train()
 
     @property
@@ -341,6 +347,76 @@ class Gr00tN1d7Processor(BaseProcessor):
     def eval(self):
         super().eval()
         self.state_action_processor.eval()
+
+    def set_tactile_config(
+        self,
+        num_fingers: int = 5,
+        finger_indices: list[int] | None = None,
+        target_size: int = 224,
+    ):
+        """Configure tactile deformation image preprocessing.
+
+        Args:
+            num_fingers: Total number of fingers in concatenated image.
+            finger_indices: Which finger indices to extract (e.g. [0, 1] for thumb+index).
+            target_size: Target image size for FTP encoder input.
+        """
+        self.tactile_num_fingers = num_fingers
+        self.tactile_finger_indices = finger_indices or list(range(num_fingers))
+        self.tactile_target_size = target_size
+
+    def _process_tactile_deform(
+        self,
+        images: dict[str, list],
+        tactile_keys: list[str],
+    ) -> np.ndarray | None:
+        """Process tactile images into per-finger tensors for FTP encoder.
+
+        Supports two modes:
+        1. Pre-split mode (recommended): Each tactile_key is already a single-finger
+           image (e.g., "tactile_finger_right_0"). Just normalize to [0,1].
+        2. Concatenated mode (legacy): tactile_key is a concatenated image that
+           needs splitting. Uses tactile_num_fingers/finger_indices config.
+
+        Returns:
+            numpy array [N_fingers, 3, H, W] float32 in [0,1], or None.
+        """
+        finger_arrays = []
+        for key in tactile_keys:
+            if key not in images or not images[key]:
+                return None
+            img = images[key][0]
+            if isinstance(img, Image.Image):
+                img = np.array(img)
+            # img shape: (H, W, 3)
+            h, w = img.shape[0], img.shape[1]
+
+            if self.tactile_num_fingers is not None and w > h * 2:
+                # Concatenated image: needs splitting
+                finger_w = w // self.tactile_num_fingers
+                for fidx in (self.tactile_finger_indices or [0]):
+                    finger_img = img[:, fidx * finger_w : (fidx + 1) * finger_w, :]
+                    pil_img = Image.fromarray(finger_img)
+                    pil_img = pil_img.resize(
+                        (self.tactile_target_size, self.tactile_target_size),
+                        Image.BILINEAR,
+                    )
+                    arr = np.array(pil_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
+                    finger_arrays.append(arr)
+            else:
+                # Pre-split image: already single-finger, just normalize
+                if h != self.tactile_target_size or w != self.tactile_target_size:
+                    pil_img = Image.fromarray(img)
+                    img = np.array(pil_img.resize(
+                        (self.tactile_target_size, self.tactile_target_size),
+                        Image.BILINEAR,
+                    ))
+                arr = img.astype(np.float32).transpose(2, 0, 1) / 255.0
+                finger_arrays.append(arr)
+
+        if not finger_arrays:
+            return None
+        return np.stack(finger_arrays, axis=0)  # [N_fingers, 3, H, W]
 
     def set_statistics(
         self,
@@ -486,9 +562,12 @@ class Gr00tN1d7Processor(BaseProcessor):
 
         # Process images: observation values are (B, T, H, W, C) numpy arrays
         image_keys = modality_config["video"].modality_keys
-        images_dict = {view: torch.from_numpy(observation[f"video.{view}"]) for view in image_keys}
+        visual_keys = [k for k in image_keys if not k.startswith("tactile_")]
+        tactile_keys = [k for k in image_keys if k.startswith("tactile_")]
+
+        images_dict = {view: torch.from_numpy(observation[f"video.{view}"]) for view in visual_keys}
         images = torch.stack(
-            [images_dict[view] for view in image_keys], dim=2
+            [images_dict[view] for view in visual_keys], dim=2
         )  # (B, T, V, H, W, C)
         assert images.ndim == 6
         B, T, V, img_H, img_W, img_C = images.shape
@@ -540,6 +619,35 @@ class Gr00tN1d7Processor(BaseProcessor):
         if action_horizon > 0:
             action_mask[:, :action_horizon] = 1.0
         transformed_observation["action_mask"] = action_mask
+
+        # Process tactile images for inference
+        if tactile_keys and self.tactile_target_size is not None:
+            tactile_batch = []
+            for b in range(B):
+                finger_tensors = []
+                for key in tactile_keys:
+                    obs_data = observation[f"video.{key}"]  # (B, T, H, W, C)
+                    img = obs_data[b, 0]  # take T=0, shape (H, W, C)
+                    h, w = img.shape[0], img.shape[1]
+
+                    if self.tactile_num_fingers and w > h * 2:
+                        # Concatenated: split (legacy path)
+                        finger_w = w // self.tactile_num_fingers
+                        for fidx in (self.tactile_finger_indices or [0]):
+                            finger_img = img[:, fidx * finger_w : (fidx + 1) * finger_w, :]
+                            pil_img = Image.fromarray(finger_img)
+                            pil_img = pil_img.resize(
+                                (self.tactile_target_size, self.tactile_target_size),
+                                Image.BILINEAR,
+                            )
+                            t = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1).float() / 255.0
+                            finger_tensors.append(t)
+                    else:
+                        # Pre-split: just normalize
+                        t = torch.from_numpy(img.copy()).permute(2, 0, 1).float() / 255.0
+                        finger_tensors.append(t)
+                tactile_batch.append(torch.stack(finger_tensors, dim=0))
+            transformed_observation["tactile_deform"] = torch.stack(tactile_batch, dim=0)
 
         return BatchFeature(transformed_observation)
 
@@ -674,6 +782,10 @@ class Gr00tN1d7Processor(BaseProcessor):
             image_transform = self.eval_image_transform
         image_keys = self.modality_configs[embodiment_tag.value]["video"].modality_keys
 
+        # Separate tactile deformation keys from visual keys for VLM
+        visual_keys = [k for k in image_keys if not k.startswith("tactile_")]
+        tactile_keys = [k for k in image_keys if k.startswith("tactile_")]
+
         if self.formalize_language:
             language = content.text.lower()
             language = re.sub(r"[^\w\s]", "", language)
@@ -681,7 +793,7 @@ class Gr00tN1d7Processor(BaseProcessor):
             language = content.text
 
         vlm_inputs = self._get_vlm_inputs(
-            image_keys=image_keys,
+            image_keys=visual_keys,
             images=content.images,
             masks=content.masks,
             image_transform=image_transform,
@@ -697,6 +809,13 @@ class Gr00tN1d7Processor(BaseProcessor):
         transformed_inputs.update(vlm_inputs)
         if action_mask is not None:
             transformed_inputs["action_mask"] = action_mask
+
+        # Process tactile images (pre-split or concatenated → per-finger normalize)
+        if tactile_keys and self.tactile_target_size is not None:
+            tactile_tensor = self._process_tactile_deform(content.images, tactile_keys)
+            if tactile_tensor is not None:
+                transformed_inputs["tactile_deform"] = tactile_tensor
+
         transformed_inputs["embodiment_id"] = self.embodiment_id_mapping[embodiment_tag.value]
         return transformed_inputs
 

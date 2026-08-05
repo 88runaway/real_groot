@@ -248,13 +248,14 @@ class Gr00tN1d7ActionHead(nn.Module):
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
 
         if self.config.use_diffusion_forcing:
-            t, t_per_token, loss_weights = self._sample_df_time(
+            t, t_per_token, loss_weights, block_c = self._sample_df_time(
                 actions.shape[0], actions.shape[1], device, actions.dtype
             )
         else:
             t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
             t_per_token = t[:, None, None]  # (B,1,1) for broadcast
             loss_weights = None
+            block_c = None
 
         noisy_trajectory = (1 - t_per_token) * noise + t_per_token * actions
         velocity = actions - noise
@@ -298,8 +299,18 @@ class Gr00tN1d7ActionHead(nn.Module):
                 )
             elif t_for_dit.dim() == 1:
                 pass  # scalar timestep, no adjustment needed
+
+            # Build tactile attention mask (block_aligned / attend_self control)
+            sa_attn_mask = self._build_tactile_attention_mask(
+                batch_size=actions.shape[0],
+                num_tactile_tokens=tactile_features.shape[1],
+                action_horizon=actions.shape[1],
+                device=device,
+                block_c=block_c,
+            )
         else:
             sa_embs = torch.cat((state_features, action_features), dim=1)
+            sa_attn_mask = None
         vl_attn_mask = backbone_output.backbone_attention_mask
 
         if self.config.use_alternate_vl_dit:
@@ -313,6 +324,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 return_all_hidden_states=True,
                 image_mask=image_mask,
                 backbone_attention_mask=backbone_attention_mask,
+                self_attention_mask=sa_attn_mask,
             )
         else:
             model_output, _ = self.model(
@@ -321,6 +333,7 @@ class Gr00tN1d7ActionHead(nn.Module):
                 encoder_attention_mask=vl_attn_mask,
                 timestep=t_for_dit,
                 return_all_hidden_states=True,
+                self_attention_mask=sa_attn_mask,
             )
 
         pred = self.action_decoder(model_output, embodiment_id)
@@ -350,6 +363,7 @@ class Gr00tN1d7ActionHead(nn.Module):
             t: [B] representative scalar time (for compatibility)
             t_per_token: [B, action_horizon, 1] per-token time for noise mixing
             loss_weights: [B, action_horizon, 1] per-block loss reweighting or None
+            block_c: [B] current block index per sample (for block_aligned mask)
         """
         block_size = self.config.df_block_size
         num_blocks = action_horizon // block_size
@@ -373,6 +387,9 @@ class Gr00tN1d7ActionHead(nn.Module):
                 1.0 - phase.unsqueeze(1) * num_blocks / (block_indices.unsqueeze(0) + 1.0)
             ).clamp(0, 1) * self.config.noise_s  # [B, nb]
 
+            # Current block index: the "frontier" block being actively denoised
+            block_c = (phase * num_blocks).long().clamp(0, num_blocks - 1)  # [B]
+
             # Loss reweighting: compensate for early blocks seeing less gradient
             if self.config.df_reweight_gamma > 0:
                 weights = (num_blocks / (block_indices + 1.0)) ** self.config.df_reweight_gamma
@@ -386,6 +403,7 @@ class Gr00tN1d7ActionHead(nn.Module):
             t_blocks = self.beta_dist.sample([batch_size, num_blocks]).to(device, dtype=dtype)
             t_blocks = (1 - t_blocks) * self.config.noise_s  # [B, nb]
             loss_weights = None
+            block_c = torch.zeros(batch_size, device=device, dtype=torch.long)
 
         # Fallback: standard flow matching time (single scalar per sample)
         t_standard = self.sample_time(batch_size, device=device, dtype=dtype)  # [B]
@@ -410,19 +428,19 @@ class Gr00tN1d7ActionHead(nn.Module):
                 use_df.unsqueeze(1).unsqueeze(2), loss_weights, torch.ones_like(loss_weights)
             )
 
-        return t, t_per_token, loss_weights
+        return t, t_per_token, loss_weights, block_c
 
     def _encode_tactile(
         self, action_input: BatchFeature, device: torch.device
     ) -> torch.Tensor | None:
-        """Encode tactile images if available.
+        """Encode tactile deformation images if available.
 
-        Looks for tactile image tensors in action_input and encodes each with
-        the corresponding func_area_idx from config.
+        Reads pre-split finger images from action_input["tactile_deform"]
+        (shape [B, N_fingers, 3, H, W]) and encodes each finger with the
+        FTP encoder using the corresponding func_area_idx.
 
-        Naming convention for tactile fields:
-            tactile_0, tactile_1, ... (matched to tactile_func_area_indices)
-            OR: tactile_left, tactile_right (legacy 2-finger mode)
+        Falls back to legacy per-field naming (tactile_0, tactile_1, ...) if
+        tactile_deform is not present.
 
         Returns:
             [B, num_tactile_tokens, input_embedding_dim] or None if tactile disabled.
@@ -430,9 +448,27 @@ class Gr00tN1d7ActionHead(nn.Module):
         if not self.use_tactile:
             return None
 
+        # Primary path: pre-split deformation images from processor
+        tactile_deform = getattr(action_input, "tactile_deform", None)
+        if tactile_deform is None and isinstance(action_input, dict):
+            tactile_deform = action_input.get("tactile_deform")
+
+        if tactile_deform is not None:
+            # tactile_deform: [B, N_fingers, 3, H, W]
+            tactile_deform = tactile_deform.to(device=device)
+            B, N = tactile_deform.shape[:2]
+            tokens = []
+            for i in range(N):
+                area_idx = self.tactile_func_area_indices[i] if i < len(self.tactile_func_area_indices) else i
+                finger_img = tactile_deform[:, i]  # [B, 3, H, W]
+                tok = self.tactile_encoder(finger_img, func_area_idx=area_idx)  # (B, 1, D)
+                tokens.append(tok)
+            tactile_tokens = torch.cat(tokens, dim=1)  # (B, num_tactile_tokens, D)
+            return tactile_tokens.to(dtype=next(self.model.parameters()).dtype)
+
+        # Fallback: legacy per-field naming
         tokens = []
         for i, area_idx in enumerate(self.tactile_func_area_indices):
-            # Try numbered naming first, then legacy left/right
             tactile_img = getattr(action_input, f"tactile_{i}", None)
             if tactile_img is None and i == 0:
                 tactile_img = getattr(action_input, "tactile_left", None)
@@ -447,6 +483,80 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         tactile_tokens = torch.cat(tokens, dim=1)  # (B, num_tactile_tokens, D)
         return tactile_tokens.to(device=device, dtype=next(self.model.parameters()).dtype)
+
+    def _build_tactile_attention_mask(
+        self,
+        batch_size: int,
+        num_tactile_tokens: int,
+        action_horizon: int,
+        device: torch.device,
+        block_c: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        """Build self-attention mask for tactile attention control.
+
+        Implements two mechanisms:
+        1. tactile_attend_self=False: Block tactile tokens from attending to each other.
+           Tactile tokens become passive KV providers — action tokens can attend to them
+           but they don't attend to each other.
+        2. tactile_block_aligned=True: Only action block c can attend to tactile tokens.
+           Other action blocks are blocked from attending tactile (enforces temporal
+           local conditioning with diffusion forcing).
+
+        Sequence layout: [state(1) | tactile(nt) | action(action_horizon)]
+
+        Args:
+            batch_size: Batch size B.
+            num_tactile_tokens: Number of tactile tokens (nt).
+            action_horizon: Total action tokens.
+            device: Tensor device.
+            block_c: Per-sample current block index [B] for block_aligned.
+                Required when tactile_block_aligned=True during training.
+
+        Returns:
+            Boolean attention mask [B, seq_len, seq_len] where True=attend,
+            or None if no masking needed.
+        """
+        need_no_self = not self.config.tactile_attend_self
+        need_block_align = (
+            self.config.tactile_block_aligned and self.config.use_diffusion_forcing
+        )
+
+        if not need_no_self and not need_block_align:
+            return None
+
+        nt = num_tactile_tokens
+        seq_len = 1 + nt + action_horizon  # state + tactile + action
+
+        # Start with full attention (all True)
+        mask = torch.ones(batch_size, seq_len, seq_len, dtype=torch.bool, device=device)
+
+        # Indices
+        tac_start = 1
+        tac_end = 1 + nt
+        act_start = 1 + nt
+
+        # 1. tactile_attend_self=False: block tactile→tactile attention
+        if need_no_self:
+            # Tactile queries (rows tac_start:tac_end) cannot attend to
+            # tactile keys (cols tac_start:tac_end)
+            mask[:, tac_start:tac_end, tac_start:tac_end] = False
+
+        # 2. block_aligned: only action block c can attend to tactile
+        if need_block_align and block_c is not None:
+            block_size = self.config.df_block_size
+            num_blocks = action_horizon // block_size
+
+            # For each action token, determine which block it belongs to
+            # action token at position act_start + j belongs to block j // block_size
+            for k in range(num_blocks):
+                blk_start = act_start + k * block_size
+                blk_end = act_start + (k + 1) * block_size
+                # Per-sample: block if k != c[b]
+                not_current = (block_c != k)  # [B]
+                # Block these action tokens from attending to tactile
+                mask[not_current, blk_start:blk_end, tac_start:tac_end] = False
+
+        return mask
 
     def _blockwise_time_schedule(self, num_steps: int, num_blocks: int, device, dtype):
         """Build a pyramid time schedule for blockwise inference.
@@ -532,6 +642,17 @@ class Gr00tN1d7ActionHead(nn.Module):
                 tac_t = torch.zeros(batch_size, nt, device=device, dtype=torch.long)
                 t_for_dit = torch.cat([t_for_dit[:, :1], tac_t, t_for_dit[:, 1:]], dim=1)
 
+            # Inference mask: only tactile_attend_self control (no block_aligned during inference)
+            sa_attn_mask = None
+            if tactile_features is not None and not self.config.tactile_attend_self:
+                sa_attn_mask = self._build_tactile_attention_mask(
+                    batch_size=batch_size,
+                    num_tactile_tokens=tactile_features.shape[1],
+                    action_horizon=action_horizon,
+                    device=device,
+                    block_c=None,
+                )
+
             if self.config.use_alternate_vl_dit:
                 model_output = self.model(
                     hidden_states=sa_embs,
@@ -539,12 +660,14 @@ class Gr00tN1d7ActionHead(nn.Module):
                     timestep=t_for_dit,
                     image_mask=backbone_output.image_mask,
                     backbone_attention_mask=backbone_output.backbone_attention_mask,
+                    self_attention_mask=sa_attn_mask,
                 )
             else:
                 model_output = self.model(
                     hidden_states=sa_embs,
                     encoder_hidden_states=vl_embeds,
                     timestep=t_for_dit,
+                    self_attention_mask=sa_attn_mask,
                 )
 
             pred = self.action_decoder(model_output, embodiment_id)
@@ -695,6 +818,17 @@ class Gr00tN1d7ActionHead(nn.Module):
                 else:
                     sa_embs = torch.cat((state_features, action_features), dim=1)
 
+                # Build inference attention mask (only tactile_attend_self control)
+                sa_attn_mask = None
+                if tactile_features is not None and not self.config.tactile_attend_self:
+                    sa_attn_mask = self._build_tactile_attention_mask(
+                        batch_size=batch_size,
+                        num_tactile_tokens=tactile_features.shape[1],
+                        action_horizon=self.config.action_horizon,
+                        device=device,
+                        block_c=None,
+                    )
+
                 # Run model forward.
                 if self.config.use_alternate_vl_dit:
                     model_output = self.model(
@@ -703,12 +837,14 @@ class Gr00tN1d7ActionHead(nn.Module):
                         timestep=timesteps_tensor,
                         image_mask=backbone_output.image_mask,
                         backbone_attention_mask=backbone_output.backbone_attention_mask,
+                        self_attention_mask=sa_attn_mask,
                     )
                 else:
                     model_output = self.model(
                         hidden_states=sa_embs,
                         encoder_hidden_states=vl_embeds,
                         timestep=timesteps_tensor,
+                        self_attention_mask=sa_attn_mask,
                     )
                 pred = self.action_decoder(model_output, embodiment_id)
 

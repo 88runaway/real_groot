@@ -126,6 +126,13 @@ class Gr00tN1d7Config(PretrainedConfig):
     tactile_freeze_backbone: bool = True
     num_tactile_tokens: int = 2  # number of tactile tokens (one per function area)
     tactile_func_area_indices: list[int] | None = None  # e.g. [24, 25] for left gripper areas
+    # Deformation image preprocessing
+    tactile_num_fingers: int = 5  # total fingers in concatenated image
+    tactile_finger_indices: list[int] | None = None  # which fingers to extract, e.g. [0, 1]
+    tactile_target_size: int = 224  # resize each finger image to this square size
+    # Tactile attention control
+    tactile_block_aligned: bool = False  # action block k only attends to tactile block k
+    tactile_attend_self: bool = True  # whether tactile tokens can attend to each other
 
     # Training parameters
     tune_projector: bool = True

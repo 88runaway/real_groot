@@ -25,6 +25,15 @@
         },
         "right_wrist": {
             "original_key": "observation.images.right_wrist"
+        },
+        "tactile_finger_right_0": {
+            "original_key": "observation.images.tactile_finger_right_0"
+        },
+        "tactile_finger_right_1": {
+            "original_key": "observation.images.tactile_finger_right_1"
+        },
+        "tactile_finger_right_2": {
+            "original_key": "observation.images.tactile_finger_right_2"
         }
     },
     "annotation": {

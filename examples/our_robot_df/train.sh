@@ -100,8 +100,41 @@ TAC_ENCODER_PATH="$(yaml_get tactile.encoder_path "")"
 TAC_SENSOR_NAME="$(yaml_get tactile.sensor_name "GelSightMini")"
 TAC_ENCODER_OUTPUT_DIM="$(yaml_get tactile.encoder_output_dim "1536")"
 TAC_FREEZE_BACKBONE="$(yaml_get tactile.freeze_backbone "true")"
-TAC_NUM_TOKENS="$(yaml_get tactile.num_tokens "2")"
 TAC_FUNC_AREA_INDICES="$(yaml_get tactile.func_area_indices "")"
+TAC_TARGET_SIZE="$(yaml_get tactile.target_size "224")"
+TAC_BLOCK_ALIGNED="$(yaml_get tactile.block_aligned "false")"
+TAC_ATTEND_SELF="$(yaml_get tactile.attend_self "true")"
+TAC_RIGHT_FINGERS="$(yaml_get tactile.right_fingers "")"
+TAC_LEFT_FINGERS="$(yaml_get tactile.left_fingers "")"
+
+# 根据 finger mask 计算: num_tokens, 活跃 video keys
+TAC_NUM_TOKENS=0
+TAC_FINGER_VIDEO_KEYS=""
+if [ "${TAC_ENABLED}" = "true" ] && [ -n "${TAC_RIGHT_FINGERS}${TAC_LEFT_FINGERS}" ]; then
+    # 解析 finger masks → 生成 video keys 列表
+    read -r TAC_NUM_TOKENS TAC_FINGER_VIDEO_KEYS < <(python3 - "${CONFIG_FILE}" <<'PY'
+import sys, yaml
+
+config_file = sys.argv[1] if len(sys.argv) > 1 else "train_config.yaml"
+with open(config_file) as f:
+    cfg = yaml.safe_load(f)
+
+tac = cfg.get("tactile", {})
+right_mask = tac.get("right_fingers", [0,0,0,0,0])
+left_mask = tac.get("left_fingers", [0,0,0,0,0])
+
+keys = []
+for i, v in enumerate(right_mask):
+    if v:
+        keys.append(f"tactile_finger_right_{i}")
+for i, v in enumerate(left_mask):
+    if v:
+        keys.append(f"tactile_finger_left_{i}")
+
+print(len(keys), ",".join(keys) if keys else "")
+PY
+    )
+fi
 
 BRIGHTNESS="$(yaml_get augmentation.color_jitter.brightness "0.3")"
 CONTRAST="$(yaml_get augmentation.color_jitter.contrast "0.4")"
@@ -143,8 +176,16 @@ if [ ! -d "${DATASET_PATH}" ]; then
     exit 1
 fi
 
+# 根据 arm_mode 选择模态配置文件
+ARM_MODE="$(yaml_get arm_mode "right")"
+if [ "${ARM_MODE}" = "bimanual" ]; then
+    MODALITY_CONFIG_PY="${SCRIPT_DIR}/our_robot_bimanual_config.py"
+else
+    MODALITY_CONFIG_PY="${SCRIPT_DIR}/our_robot_config.py"
+fi
+
 # 同步 chunk_size 到模态配置
-python3 - "${SCRIPT_DIR}/our_robot_config.py" "${CHUNK_SIZE}" <<'PY'
+python3 - "${MODALITY_CONFIG_PY}" "${CHUNK_SIZE}" <<'PY'
 import re
 import sys
 
@@ -163,7 +204,82 @@ with open(path, "w", encoding="utf-8") as f:
     f.write(updated)
 PY
 
-MODALITY_CONFIG="${SCRIPT_DIR}/our_robot_config.py"
+# 根据 finger mask 动态更新 modality config 中的触觉 video keys
+if [ "${TAC_ENABLED}" = "true" ] && [ -n "${TAC_FINGER_VIDEO_KEYS}" ]; then
+    python3 - "${MODALITY_CONFIG_PY}" "${TAC_FINGER_VIDEO_KEYS}" <<'PY'
+import re
+import sys
+
+config_path, finger_keys_str = sys.argv[1:]
+finger_keys = [k.strip() for k in finger_keys_str.split(",") if k.strip()]
+
+with open(config_path, encoding="utf-8") as f:
+    content = f.read()
+
+# Remove existing tactile keys from modality_keys list
+content = re.sub(r',\s*"tactile_finger_\w+"', '', content)
+content = re.sub(r'"tactile_finger_\w+",?\s*', '', content)
+
+# Find the video modality_keys line and inject tactile keys
+# Pattern: modality_keys=["ego", "right_wrist", ...]
+def inject_tactile(match):
+    line = match.group(0)
+    # Remove trailing ] and whitespace
+    inner = line.rstrip(']').rstrip()
+    # Add tactile keys
+    for key in finger_keys:
+        inner += f', "{key}"'
+    inner += ']'
+    return inner
+
+content = re.sub(
+    r'modality_keys=\[([^\]]*)\]',
+    inject_tactile,
+    content,
+    count=1,
+)
+
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write(content)
+
+print(f"[TAC] Updated video keys: + {finger_keys}")
+PY
+
+    # 同步 modality.json 中的触觉 video keys
+    MODALITY_JSON="${SCRIPT_DIR}/modality.json"
+    if [ "${ARM_MODE}" = "bimanual" ]; then
+        MODALITY_JSON="${SCRIPT_DIR}/modality_bimanual.json"
+    fi
+    python3 - "${MODALITY_JSON}" "${TAC_FINGER_VIDEO_KEYS}" <<'PY'
+import json
+import sys
+
+json_path, finger_keys_str = sys.argv[1:]
+finger_keys = [k.strip() for k in finger_keys_str.split(",") if k.strip()]
+
+with open(json_path, encoding="utf-8") as f:
+    data = json.load(f)
+
+# Remove old tactile keys
+video = data.get("video", {})
+old_tac_keys = [k for k in video if k.startswith("tactile_")]
+for k in old_tac_keys:
+    del video[k]
+
+# Add new tactile keys
+for key in finger_keys:
+    video[key] = {"original_key": f"observation.images.{key}"}
+
+data["video"] = video
+with open(json_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=4)
+    f.write("\n")
+
+print(f"[TAC] Updated modality.json: + {finger_keys}")
+PY
+fi
+
+MODALITY_CONFIG="${MODALITY_CONFIG_PY}"
 COLOR_JITTER_PARAMS="brightness ${BRIGHTNESS} contrast ${CONTRAST} saturation ${SATURATION} hue ${HUE}"
 
 bool_flag() {
@@ -210,6 +326,7 @@ TAC_FLAGS+=(
     --tactile-sensor-name "${TAC_SENSOR_NAME}"
     --tactile-encoder-output-dim "${TAC_ENCODER_OUTPUT_DIM}"
     --tactile-num-tokens "${TAC_NUM_TOKENS}"
+    --tactile-target-size "${TAC_TARGET_SIZE}"
 )
 if [ -n "${TAC_FUNC_AREA_INDICES}" ]; then
     TAC_FLAGS+=(--tactile-func-area-indices "${TAC_FUNC_AREA_INDICES}")
@@ -218,6 +335,16 @@ if [ "${TAC_FREEZE_BACKBONE}" = "true" ]; then
     TAC_FLAGS+=(--tactile-freeze-backbone)
 else
     TAC_FLAGS+=(--no-tactile-freeze-backbone)
+fi
+if [ "${TAC_BLOCK_ALIGNED}" = "true" ]; then
+    TAC_FLAGS+=(--tactile-block-aligned)
+else
+    TAC_FLAGS+=(--no-tactile-block-aligned)
+fi
+if [ "${TAC_ATTEND_SELF}" = "true" ]; then
+    TAC_FLAGS+=(--tactile-attend-self)
+else
+    TAC_FLAGS+=(--no-tactile-attend-self)
 fi
 
 LAUNCH_CMD=(
@@ -267,11 +394,13 @@ echo "[INFO] 模型: ${BASE_MODEL_PATH}"
 echo "[INFO] 数据集: ${DATASET_PATH}"
 echo "[INFO] 输出: ${OUTPUT_DIR}"
 echo "[INFO] steps=${MAX_STEPS}, lr=${LEARNING_RATE}, batch=${GLOBAL_BATCH_SIZE}, chunk=${CHUNK_SIZE}"
-echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}"
+echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}, arm_mode=${ARM_MODE}"
 echo "[DF]   enabled=${DF_ENABLED}, block_size=${DF_BLOCK_SIZE}, mix_prob=${DF_MIX_PROB}"
 echo "[DF]   sampling=${DF_BLOCK_TIME_SAMPLING}, gamma=${DF_REWEIGHT_GAMMA}, phase_alpha=${DF_PHASE_ALPHA}"
 echo "[TAC]  enabled=${TAC_ENABLED}, encoder=${TAC_ENCODER_PATH:-none}, sensor=${TAC_SENSOR_NAME}, freeze=${TAC_FREEZE_BACKBONE}"
-echo "[TAC]  func_areas=${TAC_FUNC_AREA_INDICES:-auto}"
+echo "[TAC]  right_fingers=${TAC_RIGHT_FINGERS:-none}, left_fingers=${TAC_LEFT_FINGERS:-none}"
+echo "[TAC]  tokens=${TAC_NUM_TOKENS}, func_areas=${TAC_FUNC_AREA_INDICES:-auto}, video_keys=${TAC_FINGER_VIDEO_KEYS:-none}"
+echo "[TAC]  block_aligned=${TAC_BLOCK_ALIGNED}, attend_self=${TAC_ATTEND_SELF}"
 echo "═══════════════════════════════════════════════════════════"
 
 cd "${REPO_DIR}"

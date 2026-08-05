@@ -222,6 +222,15 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     json.dump({k: str(v) for k, v in vars(processor).items()}, f, indent=2)
 
         self.processor = processor
+
+        # Configure tactile deformation image preprocessing if enabled
+        if getattr(self.model_config, "use_tactile", False):
+            self.processor.set_tactile_config(
+                num_fingers=self.model_config.tactile_num_fingers,
+                finger_indices=self.model_config.tactile_finger_indices,
+                target_size=self.model_config.tactile_target_size,
+            )
+
         dataset_factory = DatasetFactory(config=self.config)
         train_dataset, eval_dataset = dataset_factory.build(processor=self.processor)
 

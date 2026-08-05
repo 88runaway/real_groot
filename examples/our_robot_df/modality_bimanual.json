@@ -1,5 +1,13 @@
 {
     "state": {
+        "left_arm": {
+            "start": 0,
+            "end": 7
+        },
+        "left_hand": {
+            "start": 7,
+            "end": 29
+        },
         "right_arm": {
             "start": 29,
             "end": 36
@@ -10,6 +18,14 @@
         }
     },
     "action": {
+        "left_arm": {
+            "start": 0,
+            "end": 7
+        },
+        "left_hand": {
+            "start": 7,
+            "end": 29
+        },
         "right_arm": {
             "start": 29,
             "end": 36
@@ -23,14 +39,11 @@
         "ego": {
             "original_key": "observation.images.left_top"
         },
+        "left_wrist": {
+            "original_key": "observation.images.left_wrist"
+        },
         "right_wrist": {
             "original_key": "observation.images.right_wrist"
-        },
-        "tactile_finger_right_0": {
-            "original_key": "observation.images.tactile_finger_right_0"
-        },
-        "tactile_finger_right_1": {
-            "original_key": "observation.images.tactile_finger_right_1"
         }
     },
     "annotation": {

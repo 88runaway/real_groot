@@ -67,10 +67,19 @@ class DFFinetuneConfig(FinetuneConfig):
     """Freeze FTP backbone, only train output_proj."""
 
     tactile_num_tokens: int = 2
-    """Number of tactile tokens (one per function area)."""
+    """Number of tactile tokens (auto-computed from finger masks)."""
 
     tactile_func_area_indices: str = ""
     """Comma-separated function area indices (e.g. '24,25')."""
+
+    tactile_target_size: int = 224
+    """Target image size for each finger (square)."""
+
+    tactile_block_aligned: bool = False
+    """Block-aligned attention: action block k only attends to tactile block k."""
+
+    tactile_attend_self: bool = True
+    """Whether tactile tokens can attend to each other in self-attention."""
 
 
 def load_modality_config(modality_config_path: str):
@@ -165,6 +174,9 @@ if __name__ == "__main__":
         ]
     else:
         config.model.tactile_func_area_indices = None
+    config.model.tactile_target_size = ft_config.tactile_target_size
+    config.model.tactile_block_aligned = ft_config.tactile_block_aligned
+    config.model.tactile_attend_self = ft_config.tactile_attend_self
 
     # Training config
     config.training.experiment_name = ft_config.experiment_name
@@ -202,5 +214,6 @@ if __name__ == "__main__":
         print(f"[TAC] sensor={ft_config.tactile_sensor_name}")
         print(f"[TAC] output_dim={ft_config.tactile_encoder_output_dim}, freeze={ft_config.tactile_freeze_backbone}")
         print(f"[TAC] func_area_indices={ft_config.tactile_func_area_indices}")
+        print(f"[TAC] block_aligned={ft_config.tactile_block_aligned}, attend_self={ft_config.tactile_attend_self}")
 
     run(config)

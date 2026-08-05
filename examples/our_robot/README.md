@@ -35,10 +35,10 @@ uv sync --python 3.12
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 
 bash examples/our_robot/convert_v3_to_groot.sh \
-    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/lift_can_orig \
-    --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/lift_can_groot \
-    --dataset-name lift_can_orig \
-    --task-description "Stand the bottle upright."
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/chemistry_experiment \
+    --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/chemistry_experiment \
+    --dataset-name chemistry_experiment \
+    --task-description "Pick up the dropper, draw solution from the Erlenmeyer flask, and dispense it into the beaker."
 ```
 
 ### 2. 启动训练

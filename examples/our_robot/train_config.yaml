@@ -1,22 +1,31 @@
 # ════════════════════════════════════════════════════════════════
-#  GR00T 微调训练配置 - 双臂 RealMan（仅右臂）
+#  GR00T 微调训练配置 - 双臂 RealMan
 #
-#  数据集: lift_can_orig
-#  规模:   99 episodes, ~40K frames, 30 FPS
-#  任务:   单手立瓶（短时操作 ~15s/集）
+#  单臂/双臂切换:
+#    arm_mode: "right"    → 仅右臂 (29维: 右臂7D + 右手22D)
+#    arm_mode: "bimanual" → 双臂   (58维: 全部关节)
+#
+#  数据集: chemistry_experiment
+#  规模:   100 episodes, ~82K frames, 30 FPS
+#  任务:   化学实验操作
 # ════════════════════════════════════════════════════════════════
+
+# ── 手臂模式 ──────────────────────────────────────────────────────
+# "right" = 仅右臂 (29维 action: 右臂7D + 右手22D)
+# "bimanual" = 双臂 (58维 action: 左臂7D + 左手22D + 右臂7D + 右手22D)
+arm_mode: right
 
 # ── 路径 ─────────────────────────────────────────────────────────
 paths:
   base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
   backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
-  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/lift_can_groot/lift_can_orig
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/chemistry_experiment/chemistry_experiment
   output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
-  description: "Stand the bottle upright."
-  experiment_name: our_robot_right_arm
+  description: "Pick up the dropper, draw solution from the Erlenmeyer flask, and dispense it into the beaker."
+  experiment_name: chemistry_experiment
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────
 action:
@@ -31,7 +40,7 @@ training:
   # 99集/40K帧 是小数据集，主要风险是过拟合
   # batch_size=32 时 1 epoch ≈ 1273 steps
   # 5000 steps ≈ 4 epochs，足够收敛又不至于过拟合
-  max_steps: 15000
+  max_steps: 20000
 
   # 密集保存，方便挑选最优 checkpoint
   save_steps: 1000

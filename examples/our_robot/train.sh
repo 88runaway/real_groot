@@ -121,7 +121,15 @@ if [ ! -d "${DATASET_PATH}" ]; then
 fi
 
 # chunk_size 由模态配置决定；启动前与 YAML 同步。
-python3 - "${SCRIPT_DIR}/our_robot_config.py" "${CHUNK_SIZE}" <<'PY'
+# 根据 arm_mode 选择模态配置文件
+ARM_MODE="$(yaml_get arm_mode "right")"
+if [ "${ARM_MODE}" = "bimanual" ]; then
+    MODALITY_CONFIG_PY="${SCRIPT_DIR}/our_robot_bimanual_config.py"
+else
+    MODALITY_CONFIG_PY="${SCRIPT_DIR}/our_robot_config.py"
+fi
+
+python3 - "${MODALITY_CONFIG_PY}" "${CHUNK_SIZE}" <<'PY'
 import re
 import sys
 
@@ -140,7 +148,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write(updated)
 PY
 
-MODALITY_CONFIG="${SCRIPT_DIR}/our_robot_config.py"
+MODALITY_CONFIG="${MODALITY_CONFIG_PY}"
 COLOR_JITTER_PARAMS="brightness ${BRIGHTNESS} contrast ${CONTRAST} saturation ${SATURATION} hue ${HUE}"
 
 bool_flag() {
@@ -193,7 +201,7 @@ echo "[INFO] 模型: ${BASE_MODEL_PATH}"
 echo "[INFO] 数据集: ${DATASET_PATH}"
 echo "[INFO] 输出: ${OUTPUT_DIR}"
 echo "[INFO] steps=${MAX_STEPS}, lr=${LEARNING_RATE}, batch=${GLOBAL_BATCH_SIZE}, chunk=${CHUNK_SIZE}"
-echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}"
+echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}, arm_mode=${ARM_MODE}"
 
 cd "${REPO_DIR}"
 if [ "${DRY_RUN}" = true ]; then

@@ -186,11 +186,36 @@ PYEOF
 echo "[INFO] Step 3 完成"
 
 # ════════════════════════════════════════════════════════
-# Step 4: 计算统计量
+# Step 4: 触觉视频预处理（拆分拼接帧为单指视频）
 # ════════════════════════════════════════════════════════
 echo ""
 echo "═══════════════════════════════════════════════"
-echo "  Step 4/4: 计算 stats & relative_stats"
+echo "  Step 4/5: 触觉 deformation 视频拆分"
+echo "═══════════════════════════════════════════════"
+
+# 检查是否存在触觉 deformation 视频
+if [ -d "${CONVERTED_DIR}/videos" ] && \
+   find "${CONVERTED_DIR}/videos" -path "*tactile_deform*" -name "*.mp4" | head -1 | grep -q .; then
+    cd "${REPO_DIR}"
+    # 预处理所有手的所有手指 (双手 × 5指 = 10 视频/episode)
+    # 训练时通过 modality config 选择使用哪些
+    python3 examples/our_robot_df/preprocess_tactile.py \
+        --dataset-path "${CONVERTED_DIR}" \
+        --num-fingers 5 \
+        --finger-indices 0,1,2,3,4 \
+        --target-size 224 \
+        --source-keys "observation.images.tactile_deform_right,observation.images.tactile_deform_left"
+    echo "[INFO] Step 4 完成"
+else
+    echo "[INFO] 未检测到触觉 deformation 视频，跳过"
+fi
+
+# ════════════════════════════════════════════════════════
+# Step 5: 计算统计量
+# ════════════════════════════════════════════════════════
+echo ""
+echo "═══════════════════════════════════════════════"
+echo "  Step 5/5: 计算 stats & relative_stats"
 echo "═══════════════════════════════════════════════"
 
 cd "${REPO_DIR}"
@@ -199,7 +224,7 @@ uv run --no-sync python gr00t/data/stats.py \
     --embodiment-tag NEW_EMBODIMENT \
     --modality-config-path "${SCRIPT_DIR}/our_robot_config.py"
 
-echo "[INFO] Step 4 完成"
+echo "[INFO] Step 5 完成"
 
 echo ""
 echo "══════════════════════════════════════════════════════"
