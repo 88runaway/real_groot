@@ -23,6 +23,7 @@ INPUT_DIR=""
 OUTPUT_DIR=""
 TASK_DESCRIPTION="Stand the bottle upright."
 DATASET_NAME="lift_can_orig"
+BIMANUAL=false
 
 usage() {
     cat <<'EOF'
@@ -30,7 +31,8 @@ Usage: bash examples/our_robot/convert_v3_to_groot.sh \
   --input-dir <LeRobot v3.0 数据集路径> \
   --output-dir <输出根目录> \
   [--dataset-name <数据集名称, 默认: lift_can_orig>] \
-  [--task-description <任务描述, 默认: "Stand the bottle upright.">]
+  [--task-description <任务描述, 默认: "Stand the bottle upright.">] \
+  [--bimanual  使用双臂 modality 配置（modality_bimanual.json），默认仅右臂]
 EOF
 }
 
@@ -40,6 +42,7 @@ while [ "$#" -gt 0 ]; do
         --output-dir)      OUTPUT_DIR="$2";       shift 2 ;;
         --dataset-name)    DATASET_NAME="$2";     shift 2 ;;
         --task-description) TASK_DESCRIPTION="$2"; shift 2 ;;
+        --bimanual)        BIMANUAL=true;          shift 1 ;;
         --help|-h)         usage; exit 0 ;;
         *)                 echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -56,12 +59,21 @@ done
 CONVERTED_DIR="${OUTPUT_DIR}/${DATASET_NAME}"
 
 echo ""
+if [ "${BIMANUAL}" = true ]; then
+    MODALITY_FILE="${SCRIPT_DIR}/modality_bimanual.json"
+    MODALITY_TAG="双臂 (modality_bimanual.json)"
+else
+    MODALITY_FILE="${SCRIPT_DIR}/modality.json"
+    MODALITY_TAG="仅右臂 (modality.json)"
+fi
+
 echo "══════════════════════════════════════════════════════"
 echo "  LeRobot v3.0 → GR00T LeRobot v2 转换"
 echo "══════════════════════════════════════════════════════"
 echo "  输入目录:  ${INPUT_DIR}"
 echo "  输出目录:  ${CONVERTED_DIR}"
 echo "  任务描述:  ${TASK_DESCRIPTION}"
+echo "  模态配置:  ${MODALITY_TAG}"
 echo "══════════════════════════════════════════════════════"
 echo ""
 
@@ -104,8 +116,8 @@ echo "════════════════════════�
 echo "  Step 2/4: 拷贝 modality.json"
 echo "═══════════════════════════════════════════════"
 
-cp "${SCRIPT_DIR}/modality.json" "${CONVERTED_DIR}/meta/modality.json"
-echo "[INFO] modality.json 已拷贝到 ${CONVERTED_DIR}/meta/"
+cp "${MODALITY_FILE}" "${CONVERTED_DIR}/meta/modality.json"
+echo "[INFO] ${MODALITY_FILE} 已拷贝到 ${CONVERTED_DIR}/meta/modality.json"
 
 # ════════════════════════════════════════════════════════
 # Step 3: 补充 annotation 列和 tasks.jsonl

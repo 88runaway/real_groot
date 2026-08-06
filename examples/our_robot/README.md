@@ -31,14 +31,29 @@ uv sync --python 3.12
 
 将 LeRobot v3.0 格式的自采集数据转换为 GR00T 可用的 v2 格式：
 
+仅右臂（默认）：
+
 ```bash
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 
 bash examples/our_robot/convert_v3_to_groot.sh \
-    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/chemistry_experiment \
-    --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/chemistry_experiment \
-    --dataset-name chemistry_experiment \
-    --task-description "Pick up the dropper, draw solution from the Erlenmeyer flask, and dispense it into the beaker."
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/plug_socket \
+    --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot \
+    --dataset-name plug_socket \
+    --task-description "Pick up the charger and plug it into the top-left socket of the power strip."
+```
+
+双臂（加 `--bimanual` 参数，使用 `modality_bimanual.json`）：
+
+```bash
+cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
+
+bash examples/our_robot/convert_v3_to_groot.sh \
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/plug_socket \
+    --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot \
+    --dataset-name plug_socket \
+    --task-description "Pick up the charger and plug it into the top-left socket of the power strip." \
+    --bimanual
 ```
 
 ### 2. 启动训练

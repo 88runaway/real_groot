@@ -13,19 +13,19 @@
 # ── 手臂模式 ──────────────────────────────────────────────────────
 # "right" = 仅右臂 (29维 action: 右臂7D + 右手22D)
 # "bimanual" = 双臂 (58维 action: 左臂7D + 左手22D + 右臂7D + 右手22D)
-arm_mode: right
+arm_mode: bimanual
 
 # ── 路径 ─────────────────────────────────────────────────────────
 paths:
   base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
   backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
-  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/chemistry_experiment/chemistry_experiment
-  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/plug_socket
+  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot/plug_socket
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
-  description: "Pick up the dropper, draw solution from the Erlenmeyer flask, and dispense it into the beaker."
-  experiment_name: chemistry_experiment
+  description: "Pick up the charger and plug it into the top-left socket of the power strip."
+  experiment_name: plug_socket
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────
 action:
