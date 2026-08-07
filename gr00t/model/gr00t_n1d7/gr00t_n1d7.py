@@ -392,9 +392,11 @@ class Gr00tN1d7ActionHead(nn.Module):
             phase = phase_dist.sample([batch_size]).to(device, dtype=dtype)  # [B]
 
             block_indices = torch.arange(num_blocks, device=device, dtype=dtype)  # [nb]
-            # t_block[k] = clip(1 - phase * num_blocks / (k+1), 0, 1) * noise_s
+            # GR00T convention: t=0 noisy, t=1 clean (opposite to Pi0 where t=0 clean, t=1 noisy).
+            # Earlier blocks (small k) should be cleaner (higher t).
+            # t_block[k] = clip(phase * num_blocks / (k+1), 0, 1) * noise_s
             t_blocks = (
-                1.0 - phase.unsqueeze(1) * num_blocks / (block_indices.unsqueeze(0) + 1.0)
+                phase.unsqueeze(1) * num_blocks / (block_indices.unsqueeze(0) + 1.0)
             ).clamp(0, 1) * self.config.noise_s  # [B, nb]
 
             # Current block index: the "frontier" block being actively denoised

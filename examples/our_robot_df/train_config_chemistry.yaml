@@ -86,7 +86,8 @@ tactile:
 
 # ── 训练超参 ──────────────────────────────────────────────────────
 training:
-  max_steps: 15000
+  max_steps: 25000
+  resume_from_checkpoint: true
   save_steps: 1000
   save_total_limit: 10
   learning_rate: 6.0e-5
@@ -118,7 +119,7 @@ augmentation:
 
 # ── 硬件 & 日志 ───────────────────────────────────────────────────
 hardware:
-  num_gpus: 4
+  num_gpus: 8
 
 logging:
   use_wandb: true

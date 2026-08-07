@@ -79,6 +79,7 @@ DATALOADER_NUM_WORKERS="$(yaml_get training.dataloader_num_workers "16")"
 SHARD_SIZE="$(yaml_get training.shard_size "1024")"
 NUM_SHARDS_PER_EPOCH="$(yaml_get training.num_shards_per_epoch "100000")"
 EPISODE_SAMPLING_RATE="$(yaml_get training.episode_sampling_rate "0.1")"
+RESUME_FROM_CHECKPOINT="$(yaml_get training.resume_from_checkpoint "false")"
 
 TUNE_LLM="$(yaml_get model.tune_llm "true")"
 TUNE_VISUAL="$(yaml_get model.tune_visual "false")"
@@ -382,6 +383,7 @@ LAUNCH_CMD=(
     "${MODEL_FLAGS[@]}"
     "${DF_FLAGS[@]}"
     "${TAC_FLAGS[@]}"
+    "$(bool_flag resume-from-checkpoint "${RESUME_FROM_CHECKPOINT}")"
 )
 
 export NUM_GPUS MAX_STEPS SAVE_STEPS GLOBAL_BATCH_SIZE
@@ -400,7 +402,7 @@ echo "[INFO] 模型: ${BASE_MODEL_PATH}"
 echo "[INFO] 数据集: ${DATASET_PATH}"
 echo "[INFO] 输出: ${OUTPUT_DIR}"
 echo "[INFO] steps=${MAX_STEPS}, lr=${LEARNING_RATE}, batch=${GLOBAL_BATCH_SIZE}, chunk=${CHUNK_SIZE}"
-echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}, arm_mode=${ARM_MODE}"
+echo "[INFO] GPUs=${NUM_GPUS}, W&B=${USE_WANDB}, arm_mode=${ARM_MODE}, resume=${RESUME_FROM_CHECKPOINT}"
 echo "[DF]   enabled=${DF_ENABLED}, block_size=${DF_BLOCK_SIZE}, mix_prob=${DF_MIX_PROB}"
 echo "[DF]   sampling=${DF_BLOCK_TIME_SAMPLING}, gamma=${DF_REWEIGHT_GAMMA}, phase_alpha=${DF_PHASE_ALPHA}"
 echo "[TAC]  enabled=${TAC_ENABLED}, encoder=${TAC_ENCODER_PATH:-none}, sensor=${TAC_SENSOR_NAME}, freeze=${TAC_FREEZE_BACKBONE}"
