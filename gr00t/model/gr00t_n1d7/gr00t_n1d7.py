@@ -155,6 +155,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         if not tune_vlln:
             self.vlln.requires_grad_(False)
             self.vl_self_attention.requires_grad_(False)
+        # Re-apply tactile backbone freeze: the loop above (`p.requires_grad = True`)
+        # unfreezes everything, including any freeze applied by load_pretrained earlier.
+        if self.use_tactile and self.config.tactile_freeze_backbone:
+            self.tactile_encoder._freeze_backbone()
+            trainable_tac = sum(
+                p.numel() for p in self.tactile_encoder.parameters() if p.requires_grad
+            )
+            logger.debug(
+                f"Tactile encoder backbone re-frozen; trainable tactile params: {trainable_tac}"
+            )
         logger.debug(f"Tune action head projector: {self.tune_projector}")
         logger.debug(f"Tune action head diffusion model: {self.tune_diffusion_model}")
         logger.debug(f"Tune action head vlln: {self.tune_vlln}")

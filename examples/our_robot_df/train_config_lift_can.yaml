@@ -25,13 +25,13 @@ arm_mode: right
 paths:
   base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
   backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
-  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/lift_can_groot/lift_can_orig
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot_tactile/lift_can
   output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot_df
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
   description: "Stand the bottle upright."
-  experiment_name: our_robot_df
+  experiment_name: lift_can
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────
 action:
@@ -62,7 +62,7 @@ tactile:
   # 输出维度必须等于 input_embedding_dim (1536)
   encoder_output_dim: 1536
   # 冻结 backbone（仅 output_proj 参与训练）
-  freeze_backbone: true
+  freeze_backbone: false
   # 每个手指图像 resize 目标大小 (FTP encoder expects 224×224)
   target_size: 224
 
@@ -118,7 +118,7 @@ augmentation:
 
 # ── 硬件 & 日志 ───────────────────────────────────────────────────
 hardware:
-  num_gpus: 8
+  num_gpus: 4
 
 logging:
   use_wandb: true

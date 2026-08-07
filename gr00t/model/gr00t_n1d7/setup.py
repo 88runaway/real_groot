@@ -79,17 +79,41 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         """Setup model with proper vocabulary expansion."""
         skip_weight_loading = getattr(self.config.training, "skip_weight_loading", False)
         if self.config.training.start_from_checkpoint is not None and not skip_weight_loading:
+            mc = self.config.model
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
-                model_name=self.config.model.model_name,
-                tune_llm=self.config.model.tune_llm,
-                tune_visual=self.config.model.tune_visual,
-                tune_projector=self.config.model.tune_projector,
-                tune_diffusion_model=self.config.model.tune_diffusion_model,
-                tune_vlln=self.config.model.tune_vlln,
-                state_dropout_prob=self.config.model.state_dropout_prob,
-                backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
-                load_bf16=self.config.model.load_bf16,
+                # --- core model / training knobs ---
+                model_name=mc.model_name,
+                tune_llm=mc.tune_llm,
+                tune_visual=mc.tune_visual,
+                tune_projector=mc.tune_projector,
+                tune_diffusion_model=mc.tune_diffusion_model,
+                tune_vlln=mc.tune_vlln,
+                state_dropout_prob=mc.state_dropout_prob,
+                backbone_trainable_params_fp32=mc.backbone_trainable_params_fp32,
+                load_bf16=mc.load_bf16,
+                use_relative_action=getattr(mc, "use_relative_action", False),
+                # --- diffusion forcing ---
+                use_diffusion_forcing=getattr(mc, "use_diffusion_forcing", False),
+                df_block_size=getattr(mc, "df_block_size", 5),
+                df_mix_prob=getattr(mc, "df_mix_prob", 1.0),
+                df_block_time_sampling=getattr(mc, "df_block_time_sampling", "monotone"),
+                df_reweight_gamma=getattr(mc, "df_reweight_gamma", 0.5),
+                df_phase_alpha=getattr(mc, "df_phase_alpha", 1.0),
+                # --- tactile / FTP encoder ---
+                use_tactile=getattr(mc, "use_tactile", False),
+                tactile_encoder_type=getattr(mc, "tactile_encoder_type", "ftp"),
+                tactile_encoder_path=getattr(mc, "tactile_encoder_path", ""),
+                tactile_sensor_name=getattr(mc, "tactile_sensor_name", "GelSightMini"),
+                tactile_encoder_output_dim=getattr(mc, "tactile_encoder_output_dim", 1536),
+                tactile_freeze_backbone=getattr(mc, "tactile_freeze_backbone", True),
+                num_tactile_tokens=getattr(mc, "num_tactile_tokens", 0),
+                tactile_func_area_indices=getattr(mc, "tactile_func_area_indices", None),
+                tactile_target_size=getattr(mc, "tactile_target_size", 224),
+                tactile_num_fingers=getattr(mc, "tactile_num_fingers", 5),
+                tactile_finger_indices=getattr(mc, "tactile_finger_indices", None),
+                tactile_block_aligned=getattr(mc, "tactile_block_aligned", False),
+                tactile_attend_self=getattr(mc, "tactile_attend_self", True),
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -106,7 +130,26 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            # Ignore missing tactile encoder keys: they are randomly initialised when
+            # use_tactile=True but the base checkpoint predates the tactile extension.
+            other_missing = [
+                k
+                for k in missing_keys
+                if "mask_token" not in k and "tactile_encoder" not in k
+            ]
+            if any("tactile_encoder" in k for k in missing_keys):
+                logging.info(
+                    "tactile_encoder keys missing from checkpoint - "
+                    "re-loading FTP pretrained weights (from_pretrained may have overwritten __init__ loading)"
+                )
+                tac_path = getattr(mc, "tactile_encoder_path", "")
+                if tac_path and hasattr(model, "action_head") and hasattr(model.action_head, "tactile_encoder"):
+                    model.action_head.tactile_encoder.load_pretrained(
+                        tac_path,
+                        sensor_name=getattr(mc, "tactile_sensor_name", "GelSightMini"),
+                        freeze_backbone=getattr(mc, "tactile_freeze_backbone", True),
+                    )
+                    logging.info(f"Re-loaded FTP encoder weights from {tac_path}")
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")

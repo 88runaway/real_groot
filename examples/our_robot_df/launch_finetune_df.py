@@ -75,6 +75,12 @@ class DFFinetuneConfig(FinetuneConfig):
     tactile_target_size: int = 224
     """Target image size for each finger (square)."""
 
+    tactile_num_fingers: int = 5
+    """Total number of fingers in concatenated tactile image (per hand)."""
+
+    tactile_finger_indices: str = ""
+    """Comma-separated finger indices to extract from concatenated image (e.g. '0,1,2')."""
+
     tactile_block_aligned: bool = False
     """Block-aligned attention: action block k only attends to tactile block k."""
 
@@ -175,6 +181,13 @@ if __name__ == "__main__":
     else:
         config.model.tactile_func_area_indices = None
     config.model.tactile_target_size = ft_config.tactile_target_size
+    config.model.tactile_num_fingers = ft_config.tactile_num_fingers
+    if ft_config.tactile_finger_indices:
+        config.model.tactile_finger_indices = [
+            int(x.strip()) for x in ft_config.tactile_finger_indices.split(",")
+        ]
+    else:
+        config.model.tactile_finger_indices = None
     config.model.tactile_block_aligned = ft_config.tactile_block_aligned
     config.model.tactile_attend_self = ft_config.tactile_attend_self
 

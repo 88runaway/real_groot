@@ -239,33 +239,26 @@ class FTPTactileEncoder(nn.Module):
 
         state = load_file(str(path))
 
-        # patch_embed
-        if "vit_encoder.patch_embed.proj.weight" in state:
-            self.patch_embed.weight.data = state["vit_encoder.patch_embed.proj.weight"]
-            self.patch_embed.bias.data = state["vit_encoder.patch_embed.proj.bias"]
-        if "vit_encoder.cls_token" in state:
-            self.cls_token.data = state["vit_encoder.cls_token"]
-        if "vit_encoder.pos_embed" in state:
-            self.pos_embed.data = state["vit_encoder.pos_embed"]
-
-        # T3 blocks
+        key_map = {
+            "vit_encoder.patch_embed.proj.weight": "patch_embed.weight",
+            "vit_encoder.patch_embed.proj.bias": "patch_embed.bias",
+            "vit_encoder.cls_token": "cls_token",
+            "vit_encoder.pos_embed": "pos_embed",
+        }
+        _BLK_SUFFIXES = [
+            "norm1.weight", "norm1.bias",
+            "attn.qkv.weight", "attn.qkv.bias",
+            "attn.proj.weight", "attn.proj.bias",
+            "norm2.weight", "norm2.bias",
+            "mlp.fc1.weight", "mlp.fc1.bias",
+            "mlp.fc2.weight", "mlp.fc2.bias",
+        ]
         for i in range(_T3_DEPTH):
-            blk = self.t3_blocks[i]
-            prefix = f"vit_encoder.blocks.{i}"
-            if f"{prefix}.norm1.weight" in state:
-                blk.norm1.weight.data = state[f"{prefix}.norm1.weight"]
-                blk.norm1.bias.data = state[f"{prefix}.norm1.bias"]
-                blk.attn.qkv.weight.data = state[f"{prefix}.attn.qkv.weight"]
-                blk.attn.qkv.bias.data = state[f"{prefix}.attn.qkv.bias"]
-                blk.attn.proj.weight.data = state[f"{prefix}.attn.proj.weight"]
-                blk.attn.proj.bias.data = state[f"{prefix}.attn.proj.bias"]
-                blk.norm2.weight.data = state[f"{prefix}.norm2.weight"]
-                blk.norm2.bias.data = state[f"{prefix}.norm2.bias"]
-                blk.mlp.fc1.weight.data = state[f"{prefix}.mlp.fc1.weight"]
-                blk.mlp.fc1.bias.data = state[f"{prefix}.mlp.fc1.bias"]
-                blk.mlp.fc2.weight.data = state[f"{prefix}.mlp.fc2.weight"]
-                blk.mlp.fc2.bias.data = state[f"{prefix}.mlp.fc2.bias"]
+            for s in _BLK_SUFFIXES:
+                key_map[f"vit_encoder.blocks.{i}.{s}"] = f"t3_blocks.{i}.{s}"
 
+        mapped = {v: state[k] for k, v in key_map.items() if k in state}
+        self.load_state_dict(mapped, strict=False, assign=True)
         logger.info(f"[FTPEncoder] Loaded T3 encoder from {path}")
 
     def _load_trunk(self, path: Path):
@@ -274,33 +267,26 @@ class FTPTactileEncoder(nn.Module):
 
         state = load_file(str(path))
 
-        # Trunk blocks
+        key_map = {
+            "shared_chunk_encoder.norm.weight": "trunk_norm.weight",
+            "shared_chunk_encoder.norm.bias": "trunk_norm.bias",
+            "image_proj.weight": "image_proj.weight",
+            "image_proj.bias": "image_proj.bias",
+        }
+        _BLK_SUFFIXES = [
+            "norm1.weight", "norm1.bias",
+            "attn.qkv.weight", "attn.qkv.bias",
+            "attn.proj.weight", "attn.proj.bias",
+            "norm2.weight", "norm2.bias",
+            "mlp.fc1.weight", "mlp.fc1.bias",
+            "mlp.fc2.weight", "mlp.fc2.bias",
+        ]
         for i in range(_TRUNK_DEPTH):
-            blk = self.trunk_blocks[i]
-            prefix = f"shared_chunk_encoder.blocks.{i}"
-            if f"{prefix}.norm1.weight" in state:
-                blk.norm1.weight.data = state[f"{prefix}.norm1.weight"]
-                blk.norm1.bias.data = state[f"{prefix}.norm1.bias"]
-                blk.attn.qkv.weight.data = state[f"{prefix}.attn.qkv.weight"]
-                blk.attn.qkv.bias.data = state[f"{prefix}.attn.qkv.bias"]
-                blk.attn.proj.weight.data = state[f"{prefix}.attn.proj.weight"]
-                blk.attn.proj.bias.data = state[f"{prefix}.attn.proj.bias"]
-                blk.norm2.weight.data = state[f"{prefix}.norm2.weight"]
-                blk.norm2.bias.data = state[f"{prefix}.norm2.bias"]
-                blk.mlp.fc1.weight.data = state[f"{prefix}.mlp.fc1.weight"]
-                blk.mlp.fc1.bias.data = state[f"{prefix}.mlp.fc1.bias"]
-                blk.mlp.fc2.weight.data = state[f"{prefix}.mlp.fc2.weight"]
-                blk.mlp.fc2.bias.data = state[f"{prefix}.mlp.fc2.bias"]
+            for s in _BLK_SUFFIXES:
+                key_map[f"shared_chunk_encoder.blocks.{i}.{s}"] = f"trunk_blocks.{i}.{s}"
 
-        if "shared_chunk_encoder.norm.weight" in state:
-            self.trunk_norm.weight.data = state["shared_chunk_encoder.norm.weight"]
-            self.trunk_norm.bias.data = state["shared_chunk_encoder.norm.bias"]
-
-        # image_proj
-        if "image_proj.weight" in state:
-            self.image_proj.weight.data = state["image_proj.weight"]
-            self.image_proj.bias.data = state["image_proj.bias"]
-
+        mapped = {v: state[k] for k, v in key_map.items() if k in state}
+        self.load_state_dict(mapped, strict=False, assign=True)
         logger.info(f"[FTPEncoder] Loaded Trunk from {path}")
 
     def _load_model_weights(self, path: Path):
@@ -310,21 +296,18 @@ class FTPTactileEncoder(nn.Module):
         state = load_file(str(path))
         prefix = "hpt_tactile_encoder"
 
-        # func_area_idx_embedding
-        key = f"{prefix}.func_area_idx_embedding.weight"
-        if key in state:
-            self.func_area_idx_embedding.weight.data = state[key]
+        key_map = {
+            f"{prefix}.func_area_idx_embedding.weight": "func_area_idx_embedding.weight",
+            f"{prefix}.unified_proj.0.weight": "unified_proj.0.weight",
+            f"{prefix}.unified_proj.0.bias": "unified_proj.0.bias",
+            f"{prefix}.unified_proj.1.weight": "unified_proj.1.weight",
+            f"{prefix}.unified_proj.1.bias": "unified_proj.1.bias",
+            f"{prefix}.unified_proj.3.weight": "unified_proj.3.weight",
+            f"{prefix}.unified_proj.3.bias": "unified_proj.3.bias",
+        }
 
-        # unified_proj: Sequential(LayerNorm[0], Linear[1], GELU[2], Linear[3])
-        key_ln_w = f"{prefix}.unified_proj.0.weight"
-        if key_ln_w in state:
-            self.unified_proj[0].weight.data = state[f"{prefix}.unified_proj.0.weight"]
-            self.unified_proj[0].bias.data = state[f"{prefix}.unified_proj.0.bias"]
-            self.unified_proj[1].weight.data = state[f"{prefix}.unified_proj.1.weight"]
-            self.unified_proj[1].bias.data = state[f"{prefix}.unified_proj.1.bias"]
-            self.unified_proj[3].weight.data = state[f"{prefix}.unified_proj.3.weight"]
-            self.unified_proj[3].bias.data = state[f"{prefix}.unified_proj.3.bias"]
-
+        mapped = {v: state[k] for k, v in key_map.items() if k in state}
+        self.load_state_dict(mapped, strict=False, assign=True)
         logger.info(f"[FTPEncoder] Loaded model weights from {path}")
 
     def _freeze_backbone(self):

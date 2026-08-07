@@ -107,12 +107,13 @@ TAC_ATTEND_SELF="$(yaml_get tactile.attend_self "true")"
 TAC_RIGHT_FINGERS="$(yaml_get tactile.right_fingers "")"
 TAC_LEFT_FINGERS="$(yaml_get tactile.left_fingers "")"
 
-# 根据 finger mask 计算: num_tokens, 活跃 video keys
+# 根据 finger mask 计算: num_tokens, per-finger video keys, finger_indices
 TAC_NUM_TOKENS=0
 TAC_FINGER_VIDEO_KEYS=""
+TAC_FINGER_INDICES=""
+TAC_NUM_FINGERS_PER_HAND=5
 if [ "${TAC_ENABLED}" = "true" ] && [ -n "${TAC_RIGHT_FINGERS}${TAC_LEFT_FINGERS}" ]; then
-    # 解析 finger masks → 生成 video keys 列表
-    read -r TAC_NUM_TOKENS TAC_FINGER_VIDEO_KEYS < <(python3 - "${CONFIG_FILE}" <<'PY'
+    read -r TAC_NUM_TOKENS TAC_FINGER_VIDEO_KEYS TAC_FINGER_INDICES < <(python3 - "${CONFIG_FILE}" <<'PY'
 import sys, yaml
 
 config_file = sys.argv[1] if len(sys.argv) > 1 else "train_config.yaml"
@@ -124,14 +125,19 @@ right_mask = tac.get("right_fingers", [0,0,0,0,0])
 left_mask = tac.get("left_fingers", [0,0,0,0,0])
 
 keys = []
+finger_indices = []
 for i, v in enumerate(right_mask):
     if v:
         keys.append(f"tactile_finger_right_{i}")
+        finger_indices.append(i)
 for i, v in enumerate(left_mask):
     if v:
         keys.append(f"tactile_finger_left_{i}")
+        finger_indices.append(i)
 
-print(len(keys), ",".join(keys) if keys else "")
+print(len(keys),
+      ",".join(keys) if keys else "",
+      ",".join(str(x) for x in finger_indices) if finger_indices else "")
 PY
     )
 fi
@@ -216,17 +222,13 @@ finger_keys = [k.strip() for k in finger_keys_str.split(",") if k.strip()]
 with open(config_path, encoding="utf-8") as f:
     content = f.read()
 
-# Remove existing tactile keys from modality_keys list
-content = re.sub(r',\s*"tactile_finger_\w+"', '', content)
-content = re.sub(r'"tactile_finger_\w+",?\s*', '', content)
+# Remove existing tactile keys
+content = re.sub(r',\s*"tactile_[^"]*"', '', content)
+content = re.sub(r'"tactile_[^"]*",?\s*', '', content)
 
-# Find the video modality_keys line and inject tactile keys
-# Pattern: modality_keys=["ego", "right_wrist", ...]
 def inject_tactile(match):
     line = match.group(0)
-    # Remove trailing ] and whitespace
     inner = line.rstrip(']').rstrip()
-    # Add tactile keys
     for key in finger_keys:
         inner += f', "{key}"'
     inner += ']'
@@ -242,15 +244,13 @@ content = re.sub(
 with open(config_path, "w", encoding="utf-8") as f:
     f.write(content)
 
-print(f"[TAC] Updated video keys: + {finger_keys}")
+print(f"[TAC] Updated video keys in config: + {finger_keys}")
 PY
 
-    # 同步 modality.json 中的触觉 video keys
-    MODALITY_JSON="${SCRIPT_DIR}/modality.json"
-    if [ "${ARM_MODE}" = "bimanual" ]; then
-        MODALITY_JSON="${SCRIPT_DIR}/modality_bimanual.json"
-    fi
-    python3 - "${MODALITY_JSON}" "${TAC_FINGER_VIDEO_KEYS}" <<'PY'
+    # 同步数据集的 meta/modality.json（数据加载器从这里读取）
+    DATASET_MODALITY_JSON="${DATASET_PATH}/meta/modality.json"
+    if [ -f "${DATASET_MODALITY_JSON}" ]; then
+        python3 - "${DATASET_MODALITY_JSON}" "${TAC_FINGER_VIDEO_KEYS}" <<'PY'
 import json
 import sys
 
@@ -260,13 +260,11 @@ finger_keys = [k.strip() for k in finger_keys_str.split(",") if k.strip()]
 with open(json_path, encoding="utf-8") as f:
     data = json.load(f)
 
-# Remove old tactile keys
 video = data.get("video", {})
 old_tac_keys = [k for k in video if k.startswith("tactile_")]
 for k in old_tac_keys:
     del video[k]
 
-# Add new tactile keys
 for key in finger_keys:
     video[key] = {"original_key": f"observation.images.{key}"}
 
@@ -275,12 +273,15 @@ with open(json_path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=4)
     f.write("\n")
 
-print(f"[TAC] Updated modality.json: + {finger_keys}")
+print(f"[TAC] Updated dataset modality.json: + {finger_keys}")
 PY
+    else
+        echo "[WARN] 数据集 modality.json 不存在: ${DATASET_MODALITY_JSON}" >&2
+    fi
 fi
 
 MODALITY_CONFIG="${MODALITY_CONFIG_PY}"
-COLOR_JITTER_PARAMS="brightness ${BRIGHTNESS} contrast ${CONTRAST} saturation ${SATURATION} hue ${HUE}"
+read -r -a COLOR_JITTER_ARGS <<< "brightness ${BRIGHTNESS} contrast ${CONTRAST} saturation ${SATURATION} hue ${HUE}"
 
 bool_flag() {
     if [ "$2" = "true" ]; then
@@ -327,9 +328,13 @@ TAC_FLAGS+=(
     --tactile-encoder-output-dim "${TAC_ENCODER_OUTPUT_DIM}"
     --tactile-num-tokens "${TAC_NUM_TOKENS}"
     --tactile-target-size "${TAC_TARGET_SIZE}"
+    --tactile-num-fingers "${TAC_NUM_FINGERS_PER_HAND}"
 )
 if [ -n "${TAC_FUNC_AREA_INDICES}" ]; then
     TAC_FLAGS+=(--tactile-func-area-indices "${TAC_FUNC_AREA_INDICES}")
+fi
+if [ -n "${TAC_FINGER_INDICES}" ]; then
+    TAC_FLAGS+=(--tactile-finger-indices "${TAC_FINGER_INDICES}")
 fi
 if [ "${TAC_FREEZE_BACKBONE}" = "true" ]; then
     TAC_FLAGS+=(--tactile-freeze-backbone)
@@ -359,8 +364,8 @@ LAUNCH_CMD=(
     --experiment-name "${EXPERIMENT_NAME}"
     --wandb-project "${WANDB_PROJECT}"
     --state-dropout-prob "${STATE_DROPOUT_PROB}"
-    --color-jitter-params "${COLOR_JITTER_PARAMS}"
-    --use-percentiles "${USE_PERCENTILES}"
+    --color-jitter-params "${COLOR_JITTER_ARGS[@]}"
+    "$(bool_flag use-percentiles "${USE_PERCENTILES}")"
     --learning-rate "${LEARNING_RATE}"
     --weight-decay "${WEIGHT_DECAY}"
     --warmup-ratio "${WARMUP_RATIO}"
@@ -373,6 +378,7 @@ LAUNCH_CMD=(
     --shard-size "${SHARD_SIZE}"
     --num-shards-per-epoch "${NUM_SHARDS_PER_EPOCH}"
     --episode-sampling-rate "${EPISODE_SAMPLING_RATE}"
+    --num-gpus "${NUM_GPUS}"
     "${MODEL_FLAGS[@]}"
     "${DF_FLAGS[@]}"
     "${TAC_FLAGS[@]}"
@@ -400,6 +406,7 @@ echo "[DF]   sampling=${DF_BLOCK_TIME_SAMPLING}, gamma=${DF_REWEIGHT_GAMMA}, pha
 echo "[TAC]  enabled=${TAC_ENABLED}, encoder=${TAC_ENCODER_PATH:-none}, sensor=${TAC_SENSOR_NAME}, freeze=${TAC_FREEZE_BACKBONE}"
 echo "[TAC]  right_fingers=${TAC_RIGHT_FINGERS:-none}, left_fingers=${TAC_LEFT_FINGERS:-none}"
 echo "[TAC]  tokens=${TAC_NUM_TOKENS}, func_areas=${TAC_FUNC_AREA_INDICES:-auto}, video_keys=${TAC_FINGER_VIDEO_KEYS:-none}"
+echo "[TAC]  finger_indices=${TAC_FINGER_INDICES:-none}, num_fingers=${TAC_NUM_FINGERS_PER_HAND}"
 echo "[TAC]  block_aligned=${TAC_BLOCK_ALIGNED}, attend_self=${TAC_ATTEND_SELF}"
 echo "═══════════════════════════════════════════════════════════"
 
