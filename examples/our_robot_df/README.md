@@ -65,10 +65,10 @@ uv sync --python 3.12
 
 ```bash
 bash examples/our_robot/convert_v3_to_groot.sh \
-    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/chemistry_experiment \
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/clean_the_whiteboard \
     --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot_tactile \
-    --dataset-name chemistry_experiment \
-    --task-description "Pick up the dropper, draw solution from the Erlenmeyer flask, and dispense it into the beaker."
+    --dataset-name whiteboard \
+    --task-description "Remove the marks from the whiteboard."
 ```
 
 此脚本自动执行 5 步：
@@ -141,8 +141,8 @@ task:
 ```bash
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 source /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T/.venv/bin/activate
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash examples/our_robot_df/train.sh \
-    --config examples/our_robot_df/train_config_plug_socket.yaml
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash examples/our_robot_df/train.sh \
+    --config examples/our_robot_df/train_config_whiteboard.yaml
 
 
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T

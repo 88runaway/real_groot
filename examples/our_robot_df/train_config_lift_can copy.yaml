@@ -25,13 +25,13 @@ arm_mode: right
 paths:
   base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
   backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
-  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot_tactile/whiteboard
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot_tactile/lift_can
   output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot_df
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
-  description: "Remove the marks from the whiteboard."
-  experiment_name: whiteboard
+  description: "Stand the bottle upright."
+  experiment_name: lift_can
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────
 action:
@@ -118,7 +118,7 @@ augmentation:
 
 # ── 硬件 & 日志 ───────────────────────────────────────────────────
 hardware:
-  num_gpus: 4
+  num_gpus: 8
 
 logging:
   use_wandb: true
