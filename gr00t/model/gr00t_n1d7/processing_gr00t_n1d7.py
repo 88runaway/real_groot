@@ -365,6 +365,19 @@ class Gr00tN1d7Processor(BaseProcessor):
         self.tactile_finger_indices = finger_indices or list(range(num_fingers))
         self.tactile_target_size = target_size
 
+    def _process_single_tactile_frame(self, img) -> np.ndarray | None:
+        """Process one tactile image into [3, H, W] float32 in [0,1]."""
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+        h, w = img.shape[0], img.shape[1]
+        if h != self.tactile_target_size or w != self.tactile_target_size:
+            pil_img = Image.fromarray(img)
+            img = np.array(pil_img.resize(
+                (self.tactile_target_size, self.tactile_target_size),
+                Image.BILINEAR,
+            ))
+        return img.astype(np.float32).transpose(2, 0, 1) / 255.0
+
     def _process_tactile_deform(
         self,
         images: dict[str, list],
@@ -372,14 +385,8 @@ class Gr00tN1d7Processor(BaseProcessor):
     ) -> np.ndarray | None:
         """Process tactile images into per-finger tensors for FTP encoder.
 
-        Supports two modes:
-        1. Pre-split mode (recommended): Each tactile_key is already a single-finger
-           image (e.g., "tactile_finger_right_0"). Just normalize to [0,1].
-        2. Concatenated mode (legacy): tactile_key is a concatenated image that
-           needs splitting. Uses tactile_num_fingers/finger_indices config.
-
-        Returns:
-            numpy array [N_fingers, 3, H, W] float32 in [0,1], or None.
+        Returns [N_fingers, 3, H, W] float32 in [0, 1].
+        Each tactile key should map to a list with exactly 1 frame (single-frame).
         """
         finger_arrays = []
         for key in tactile_keys:
@@ -388,11 +395,9 @@ class Gr00tN1d7Processor(BaseProcessor):
             img = images[key][0]
             if isinstance(img, Image.Image):
                 img = np.array(img)
-            # img shape: (H, W, 3)
             h, w = img.shape[0], img.shape[1]
 
             if self.tactile_num_fingers is not None and w > h * 2:
-                # Concatenated image: needs splitting
                 finger_w = w // self.tactile_num_fingers
                 for fidx in (self.tactile_finger_indices or [0]):
                     finger_img = img[:, fidx * finger_w : (fidx + 1) * finger_w, :]
@@ -404,14 +409,9 @@ class Gr00tN1d7Processor(BaseProcessor):
                     arr = np.array(pil_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
                     finger_arrays.append(arr)
             else:
-                # Pre-split image: already single-finger, just normalize
-                if h != self.tactile_target_size or w != self.tactile_target_size:
-                    pil_img = Image.fromarray(img)
-                    img = np.array(pil_img.resize(
-                        (self.tactile_target_size, self.tactile_target_size),
-                        Image.BILINEAR,
-                    ))
-                arr = img.astype(np.float32).transpose(2, 0, 1) / 255.0
+                arr = self._process_single_tactile_frame(img)
+                if arr is None:
+                    return None
                 finger_arrays.append(arr)
 
         if not finger_arrays:
@@ -564,6 +564,10 @@ class Gr00tN1d7Processor(BaseProcessor):
         image_keys = modality_config["video"].modality_keys
         visual_keys = [k for k in image_keys if not k.startswith("tactile_")]
         tactile_keys = [k for k in image_keys if k.startswith("tactile_")]
+
+        # Also check tactile_video modality (DF multi-frame config)
+        if not tactile_keys and "tactile_video" in modality_config:
+            tactile_keys = modality_config["tactile_video"].modality_keys
 
         images_dict = {view: torch.from_numpy(observation[f"video.{view}"]) for view in visual_keys}
         images = torch.stack(
@@ -786,6 +790,11 @@ class Gr00tN1d7Processor(BaseProcessor):
         visual_keys = [k for k in image_keys if not k.startswith("tactile_")]
         tactile_keys = [k for k in image_keys if k.startswith("tactile_")]
 
+        # Also collect tactile keys from tactile_video modality (DF multi-frame)
+        emb_config = self.modality_configs[embodiment_tag.value]
+        if "tactile_video" in emb_config and not tactile_keys:
+            tactile_keys = emb_config["tactile_video"].modality_keys
+
         if self.formalize_language:
             language = content.text.lower()
             language = re.sub(r"[^\w\s]", "", language)
@@ -815,6 +824,10 @@ class Gr00tN1d7Processor(BaseProcessor):
             tactile_tensor = self._process_tactile_deform(content.images, tactile_keys)
             if tactile_tensor is not None:
                 transformed_inputs["tactile_deform"] = tactile_tensor
+
+        # Pass through block_c from data pipeline (DF block-aligned tactile)
+        if content.metadata and "block_c" in content.metadata:
+            transformed_inputs["block_c"] = content.metadata["block_c"]
 
         transformed_inputs["embodiment_id"] = self.embodiment_id_mapping[embodiment_tag.value]
         return transformed_inputs

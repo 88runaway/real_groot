@@ -142,12 +142,12 @@ task:
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 source /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T/.venv/bin/activate
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash examples/our_robot_df/train.sh \
-    --config examples/our_robot_df/train_config_lift_can.yaml
+    --config examples/our_robot_df/train_config_plug_socket.yaml
 
 
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 source /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T/.venv/bin/activate
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash examples/our_robot_df/train.sh \
+bash examples/our_robot_df/train.sh \
     --config examples/our_robot_df/train_config_chemistry.yaml
 ```
 

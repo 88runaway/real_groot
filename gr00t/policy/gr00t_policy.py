@@ -252,7 +252,14 @@ class Gr00tPolicy(BasePolicy):
 
         # ===== VIDEO VALIDATION =====
         # Validate each video stream defined in the modality config
-        for video_key in self.modality_configs["video"].modality_keys:
+        # Also validate tactile_video keys (DF multi-frame) since they are
+        # accessed under observation["video"] at inference time.
+        all_video_keys = list(self.modality_configs["video"].modality_keys)
+        if "tactile_video" in self.modality_configs:
+            for k in self.modality_configs["tactile_video"].modality_keys:
+                if k not in all_video_keys:
+                    all_video_keys.append(k)
+        for video_key in all_video_keys:
             assert video_key in observation["video"], (
                 f"Video key '{video_key}' must be in observation"
             )
@@ -545,7 +552,12 @@ class Gr00tSimPolicyWrapper(PolicyWrapper):
 
         # ===== VIDEO VALIDATION =====
         # Check video modalities with flat key format: 'video.camera_name'
-        for video_key in modality_configs["video"].modality_keys:
+        all_video_keys_flat = list(modality_configs["video"].modality_keys)
+        if "tactile_video" in modality_configs:
+            for k in modality_configs["tactile_video"].modality_keys:
+                if k not in all_video_keys_flat:
+                    all_video_keys_flat.append(k)
+        for video_key in all_video_keys_flat:
             # Construct flat key expected in Gr00t sim environment
             parsed_key = f"video.{video_key}"
             assert parsed_key in observation, f"Video key '{parsed_key}' must be in observation"

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from pathlib import Path
 
 import numpy as np
@@ -32,23 +33,37 @@ def extract_step_data(
     allow_padding: bool = False,
 ) -> VLAStepData:
     step_data = {}
+    metadata = {}
 
     # Extract data for each configured modality
     for modality, config in modality_configs.items():
         step_data[modality] = {}
-        # Sample timesteps according to delta indices configuration
-        indices_to_load = [step_index + delta_index for delta_index in config.delta_indices]
+
+        if modality == "tactile_video":
+            # DF block-aligned tactile: randomly pick ONE block boundary,
+            # load only that single frame.  Store the block index so the
+            # model can condition its noise schedule on it.
+            num_blocks = len(config.delta_indices)
+            block_c = random.randint(0, num_blocks - 1)
+            selected_delta = config.delta_indices[block_c]
+            indices_to_load = [step_index + selected_delta]
+            metadata["block_c"] = block_c
+        else:
+            indices_to_load = [step_index + delta_index for delta_index in config.delta_indices]
+
         if allow_padding:
             indices_to_load = [max(0, min(idx, len(episode_data) - 1)) for idx in indices_to_load]
+
+        col_prefix = "video" if modality == "tactile_video" else modality
         for key in config.modality_keys:
-            if f"{modality}.{key}" in episode_data.columns:
-                modality_data = episode_data[f"{modality}.{key}"].iloc[indices_to_load]
+            col_name = f"{col_prefix}.{key}"
+            if col_name in episode_data.columns:
+                modality_data = episode_data[col_name].iloc[indices_to_load]
             else:
                 raise KeyError(
-                    f"{modality}.{key} not found in episode data, available keys: {episode_data.columns}"
+                    f"{col_name} not found in episode data, available keys: {episode_data.columns}"
                 )
             if modality in ["state", "action"]:
-                # Stack arrays for numerical modalities
                 step_data[modality][key] = np.vstack(
                     [
                         np.array(modality_data.iloc[i]).astype(np.float32)
@@ -56,7 +71,6 @@ def extract_step_data(
                     ]
                 )
             else:
-                # Keep as lists for other modalities (video, language)
                 step_data[modality][key] = modality_data.tolist()
 
     # Parse extracted data into VLAStepData structure
@@ -68,6 +82,12 @@ def extract_step_data(
     assert len(language_data) == 1, f"Expected 1 language, got {len(language_data)}"
     text = language_data[list(language_data.keys())[0]][0]
 
+    # Merge tactile_video single-frame data into images dict so the
+    # processor sees them under the normal "images" field.
+    tactile_video_data = step_data.get("tactile_video", {})
+    if tactile_video_data:
+        video_data.update(tactile_video_data)
+
     vla_step_data = VLAStepData(
         images=video_data,
         masks=mask_data if mask_data else None,
@@ -75,6 +95,7 @@ def extract_step_data(
         actions=action_data,
         text=text,
         embodiment=embodiment_tag,
+        metadata=metadata if metadata else None,
     )
     return vla_step_data
 

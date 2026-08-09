@@ -258,8 +258,16 @@ class Gr00tN1d7ActionHead(nn.Module):
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
 
         if self.config.use_diffusion_forcing:
+            # Read pre-sampled block_c from data pipeline (DF tactile alignment)
+            ext_block_c = getattr(action_input, "block_c", None)
+            if ext_block_c is None and isinstance(action_input, dict):
+                ext_block_c = action_input.get("block_c")
+            if ext_block_c is not None:
+                ext_block_c = ext_block_c.to(device=device, dtype=torch.long)
+
             t, t_per_token, loss_weights, block_c = self._sample_df_time(
-                actions.shape[0], actions.shape[1], device, actions.dtype
+                actions.shape[0], actions.shape[1], device, actions.dtype,
+                external_block_c=ext_block_c,
             )
         else:
             t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
@@ -294,7 +302,7 @@ class Gr00tN1d7ActionHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        # Encode tactile and inject into sequence
+        # Encode tactile (data pipeline already selected the correct temporal frame)
         tactile_features = self._encode_tactile(action_input, device)
 
         # Join state, tactile (optional), and action along sequence dimension.
@@ -353,6 +361,13 @@ class Gr00tN1d7ActionHead(nn.Module):
         action_mask = action_input.action_mask
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
 
+        # DF active mask: exclude near-clean tokens whose loss is dominated by
+        # irreducible Var[noise]=1.0 (matches Pi0's active_mask = (time > 5e-4)).
+        # GR00T convention: t=noise_s is clean; Pi0 convention: t=0 is clean.
+        if self.config.use_diffusion_forcing and t_per_token is not None:
+            df_active = (t_per_token < self.config.noise_s - 5e-4).to(dtype=action_loss.dtype)
+            action_loss = action_loss * df_active
+
         if loss_weights is not None:
             action_loss = action_loss * loss_weights
 
@@ -366,8 +381,16 @@ class Gr00tN1d7ActionHead(nn.Module):
             "state_features": state_features,
         }
 
-    def _sample_df_time(self, batch_size, action_horizon, device, dtype):
+    def _sample_df_time(
+        self, batch_size, action_horizon, device, dtype,
+        external_block_c: torch.Tensor | None = None,
+    ):
         """Sample block-wise diffusion forcing timesteps.
+
+        Args:
+            external_block_c: [B] pre-sampled block index from data pipeline.
+                When provided (monotone mode), phase is derived from it so that
+                the noise schedule is consistent with the loaded tactile frame.
 
         Returns:
             t: [B] representative scalar time (for compatibility)
@@ -384,23 +407,27 @@ class Gr00tN1d7ActionHead(nn.Module):
         use_df = torch.rand(batch_size, device=device) < self.config.df_mix_prob
 
         if self.config.df_block_time_sampling == "monotone":
-            # Monotone scheduling: earlier blocks are cleaner
-            phase_dist = Beta(
-                torch.tensor(float(self.config.df_phase_alpha), device="cpu"),
-                torch.tensor(1.0, device="cpu"),
-            )
-            phase = phase_dist.sample([batch_size]).to(device, dtype=dtype)  # [B]
+            if external_block_c is not None:
+                # Phase derived from pre-sampled block_c:
+                # block_c = floor(phase * num_blocks)  =>
+                # phase ∈ [block_c/nb, (block_c+1)/nb)
+                block_c = external_block_c  # [B]
+                phase = (block_c.float() + torch.rand(batch_size, device=device, dtype=dtype)) / num_blocks
+            else:
+                # No external block_c (legacy path): sample phase freely
+                phase_dist = Beta(
+                    torch.tensor(float(self.config.df_phase_alpha), device="cpu"),
+                    torch.tensor(1.0, device="cpu"),
+                )
+                phase = phase_dist.sample([batch_size]).to(device, dtype=dtype)
+                block_c = (phase * num_blocks).long().clamp(0, num_blocks - 1)
 
             block_indices = torch.arange(num_blocks, device=device, dtype=dtype)  # [nb]
-            # GR00T convention: t=0 noisy, t=1 clean (opposite to Pi0 where t=0 clean, t=1 noisy).
+            # GR00T convention: t=0 noisy, t=1 clean.
             # Earlier blocks (small k) should be cleaner (higher t).
-            # t_block[k] = clip(phase * num_blocks / (k+1), 0, 1) * noise_s
             t_blocks = (
                 phase.unsqueeze(1) * num_blocks / (block_indices.unsqueeze(0) + 1.0)
             ).clamp(0, 1) * self.config.noise_s  # [B, nb]
-
-            # Current block index: the "frontier" block being actively denoised
-            block_c = (phase * num_blocks).long().clamp(0, num_blocks - 1)  # [B]
 
             # Loss reweighting: compensate for early blocks seeing less gradient
             if self.config.df_reweight_gamma > 0:
@@ -411,11 +438,13 @@ class Gr00tN1d7ActionHead(nn.Module):
             else:
                 loss_weights = None
         else:
-            # Independent: each block samples independently
+            # Independent: each block samples independently, no frontier block
             t_blocks = self.beta_dist.sample([batch_size, num_blocks]).to(device, dtype=dtype)
             t_blocks = (1 - t_blocks) * self.config.noise_s  # [B, nb]
             loss_weights = None
-            block_c = torch.zeros(batch_size, device=device, dtype=torch.long)
+            block_c = external_block_c if external_block_c is not None else torch.zeros(
+                batch_size, device=device, dtype=torch.long
+            )
 
         # Fallback: standard flow matching time (single scalar per sample)
         t_standard = self.sample_time(batch_size, device=device, dtype=dtype)  # [B]
@@ -443,13 +472,18 @@ class Gr00tN1d7ActionHead(nn.Module):
         return t, t_per_token, loss_weights, block_c
 
     def _encode_tactile(
-        self, action_input: BatchFeature, device: torch.device
+        self,
+        action_input: BatchFeature,
+        device: torch.device,
     ) -> torch.Tensor | None:
         """Encode tactile deformation images if available.
 
         Reads pre-split finger images from action_input["tactile_deform"]
-        (shape [B, N_fingers, 3, H, W]) and encodes each finger with the
-        FTP encoder using the corresponding func_area_idx.
+        ([B, N_fingers, 3, H, W]) and encodes each finger with the FTP encoder.
+
+        The data pipeline already selects the correct temporal frame
+        (block_c-aligned for DF training, observation-time for inference),
+        so no temporal selection is needed here.
 
         Falls back to legacy per-field naming (tactile_0, tactile_1, ...) if
         tactile_deform is not present.
@@ -466,8 +500,9 @@ class Gr00tN1d7ActionHead(nn.Module):
             tactile_deform = action_input.get("tactile_deform")
 
         if tactile_deform is not None:
-            # tactile_deform: [B, N_fingers, 3, H, W]
             tactile_deform = tactile_deform.to(device=device)
+
+            # tactile_deform: [B, N_fingers, 3, H, W]
             B, N = tactile_deform.shape[:2]
             tokens = []
             for i in range(N):

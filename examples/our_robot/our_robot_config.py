@@ -24,7 +24,7 @@ from gr00t.data.types import (
 our_robot_config = {
     "video": ModalityConfig(
         delta_indices=[0],
-        modality_keys=["ego", "right_wrist", "tactile_finger_right_0", "tactile_finger_right_1"],
+        modality_keys=["ego", "right_wrist"],
     ),
     "state": ModalityConfig(
         delta_indices=[0],

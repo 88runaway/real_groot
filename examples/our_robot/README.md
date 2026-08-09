@@ -37,10 +37,10 @@ uv sync --python 3.12
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 
 bash examples/our_robot/convert_v3_to_groot.sh \
-    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/plug_socket \
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/clean_the_whiteboard \
     --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot \
-    --dataset-name plug_socket \
-    --task-description "Pick up the charger and plug it into the top-left socket of the power strip."
+    --dataset-name whiteboard \
+    --task-description "Remove the marks from the whiteboard."
 ```
 
 双臂（加 `--bimanual` 参数，使用 `modality_bimanual.json`）：
@@ -49,9 +49,9 @@ bash examples/our_robot/convert_v3_to_groot.sh \
 cd /mnt/netdata/Team/Personal/chenyiyang/zjb/Isaac-GR00T
 
 bash examples/our_robot/convert_v3_to_groot.sh \
-    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/plug_socket \
+    --input-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/real/ \
     --output-dir /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot \
-    --dataset-name plug_socket \
+    --dataset-name whiteboard \
     --task-description "Pick up the charger and plug it into the top-left socket of the power strip." \
     --bimanual
 ```
@@ -61,7 +61,7 @@ bash examples/our_robot/convert_v3_to_groot.sh \
 训练参数统一在 `train_config.yaml` 中管理（路径、lr、steps、chunk_size 等），直接运行即可：
 
 ```bash
-bash examples/our_robot/train.sh
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash examples/our_robot/train.sh
 ```
 
 预览将执行的命令（不实际训练）：

@@ -13,19 +13,19 @@
 # ── 手臂模式 ──────────────────────────────────────────────────────
 # "right" = 仅右臂 (29维 action: 右臂7D + 右手22D)
 # "bimanual" = 双臂 (58维 action: 左臂7D + 左手22D + 右臂7D + 右手22D)
-arm_mode: bimanual
+arm_mode: right
 
 # ── 路径 ─────────────────────────────────────────────────────────
 paths:
   base_model_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_base
   backbone_model_name: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/cosmos_base
-  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/plug_socket
-  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot/plug_socket
+  dataset_path: /mnt/netdata/Team/Personal/chenyiyang/zjb/data/groot/whiteboard
+  output_dir: /mnt/netdata/Team/Personal/chenyiyang/zjb/ckpts/groot_our_robot/whiteboard
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
-  description: "Pick up the charger and plug it into the top-left socket of the power strip."
-  experiment_name: plug_socket
+  description: "Remove the marks from the whiteboard."
+  experiment_name: whiteboard
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────
 action:
@@ -40,7 +40,7 @@ training:
   # 99集/40K帧 是小数据集，主要风险是过拟合
   # batch_size=32 时 1 epoch ≈ 1273 steps
   # 5000 steps ≈ 4 epochs，足够收敛又不至于过拟合
-  max_steps: 20000
+  max_steps: 15000
 
   # 密集保存，方便挑选最优 checkpoint
   save_steps: 1000
@@ -85,7 +85,7 @@ augmentation:
 
 # ── 硬件 & 日志 ───────────────────────────────────────────────────
 hardware:
-  num_gpus: 8
+  num_gpus: 4
 
 logging:
   use_wandb: true

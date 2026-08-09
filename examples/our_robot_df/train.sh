@@ -191,27 +191,43 @@ else
     MODALITY_CONFIG_PY="${SCRIPT_DIR}/our_robot_config.py"
 fi
 
-# 同步 chunk_size 到模态配置
-python3 - "${MODALITY_CONFIG_PY}" "${CHUNK_SIZE}" <<'PY'
+# 同步 chunk_size 和 tactile_video delta_indices 到模态配置
+python3 - "${MODALITY_CONFIG_PY}" "${CHUNK_SIZE}" "${DF_BLOCK_SIZE}" <<'PY'
 import re
 import sys
 
-path, chunk_size = sys.argv[1:]
+path, chunk_size, block_size = sys.argv[1:]
+chunk_size, block_size = int(chunk_size), int(block_size)
+
 with open(path, encoding="utf-8") as f:
     content = f.read()
+
+# Update action delta_indices
 updated, count = re.subn(
-    r"delta_indices=list\(range\(0,\s*\d+\)\)",
-    f"delta_indices=list(range(0, {int(chunk_size)}))",
+    r"delta_indices=list\(range\(0,\s*_ACTION_HORIZON\)\)",
+    f"delta_indices=list(range(0, _ACTION_HORIZON))",
     content,
     count=1,
 )
-if count != 1:
-    raise RuntimeError("未找到 action.delta_indices 配置")
+if count == 0:
+    updated, count = re.subn(
+        r"delta_indices=list\(range\(0,\s*\d+\)\)",
+        f"delta_indices=list(range(0, {chunk_size}))",
+        content,
+        count=1,
+    )
+    if count != 1:
+        raise RuntimeError("未找到 action.delta_indices 配置")
+
+# Update _ACTION_HORIZON and _BLOCK_SIZE constants
+updated = re.sub(r"_ACTION_HORIZON\s*=\s*\d+", f"_ACTION_HORIZON = {chunk_size}", updated)
+updated = re.sub(r"_BLOCK_SIZE\s*=\s*\d+", f"_BLOCK_SIZE = {block_size}", updated)
+
 with open(path, "w", encoding="utf-8") as f:
     f.write(updated)
 PY
 
-# 根据 finger mask 动态更新 modality config 中的触觉 video keys
+# 根据 finger mask 动态更新 modality config 中的触觉 tactile_video keys
 if [ "${TAC_ENABLED}" = "true" ] && [ -n "${TAC_FINGER_VIDEO_KEYS}" ]; then
     python3 - "${MODALITY_CONFIG_PY}" "${TAC_FINGER_VIDEO_KEYS}" <<'PY'
 import re
@@ -223,29 +239,23 @@ finger_keys = [k.strip() for k in finger_keys_str.split(",") if k.strip()]
 with open(config_path, encoding="utf-8") as f:
     content = f.read()
 
-# Remove existing tactile keys
-content = re.sub(r',\s*"tactile_[^"]*"', '', content)
-content = re.sub(r'"tactile_[^"]*",?\s*', '', content)
+# Remove existing tactile finger keys (tactile_finger_*, tactile_left_*, tactile_right_*)
+# but NOT "tactile_video" (the modality dict key)
+content = re.sub(r',\s*"tactile_(?!video")[^"]*"', '', content)
+content = re.sub(r'"tactile_(?!video")[^"]*",?\s*', '', content)
 
-def inject_tactile(match):
-    line = match.group(0)
-    inner = line.rstrip(']').rstrip()
-    for key in finger_keys:
-        inner += f', "{key}"'
-    inner += ']'
-    return inner
-
+# Rebuild the tactile_video modality_keys list
+keys_str = ", ".join(f'"{k}"' for k in finger_keys)
 content = re.sub(
-    r'modality_keys=\[([^\]]*)\]',
-    inject_tactile,
+    r'("tactile_video":\s*ModalityConfig\(\s*delta_indices=_TACTILE_DELTA_INDICES,\s*modality_keys=)\[[^\]]*\]',
+    rf'\1[{keys_str}]',
     content,
-    count=1,
 )
 
 with open(config_path, "w", encoding="utf-8") as f:
     f.write(content)
 
-print(f"[TAC] Updated video keys in config: + {finger_keys}")
+print(f"[TAC] Updated tactile_video keys in config: {finger_keys}")
 PY
 
     # 同步数据集的 meta/modality.json（数据加载器从这里读取）

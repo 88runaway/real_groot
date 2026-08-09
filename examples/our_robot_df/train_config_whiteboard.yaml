@@ -30,7 +30,7 @@ paths:
 
 # ── 任务 ─────────────────────────────────────────────────────────
 task:
-  description: "Stand the bottle upright."
+  description: "Remove the marks from the whiteboard."
   experiment_name: lift_can
 
 # ── 动作 chunk 配置 ──────────────────────────────────────────────

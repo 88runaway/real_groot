@@ -56,7 +56,7 @@ LEROBOT_MODALITY_FILENAME = "modality.json"
 LEROBOT_STATS_FILE_NAME = "stats.json"
 LEROBOT_RELATIVE_STATS_FILE_NAME = "relative_stats.json"
 
-ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask"]
+ALLOWED_MODALITIES = ["video", "state", "action", "language", "mask", "tactile_video"]
 DEFAULT_COLUMN_NAMES = {
     "state": "observation.state",
     "action": "action",
@@ -413,13 +413,25 @@ class LeRobotEpisodeLoader:
         """
         video_data = {}
 
-        if not self.video_path_pattern or "video" not in self.modality_configs:
+        if not self.video_path_pattern:
+            return video_data
+
+        # Collect image keys from both "video" and "tactile_video" modalities.
+        # All video files are stored under the "video" namespace in the dataset,
+        # so tactile_video keys also resolve via modality_meta["video"].
+        all_image_keys = []
+        for mod_name in ("video", "tactile_video"):
+            if mod_name in self.modality_configs:
+                for k in self.modality_configs[mod_name].modality_keys:
+                    if k not in all_image_keys:
+                        all_image_keys.append(k)
+
+        if not all_image_keys:
             return video_data
 
         chunk_idx = episode_index // self.chunk_size
-        image_keys = self.modality_configs["video"].modality_keys
 
-        for image_key in image_keys:
+        for image_key in all_image_keys:
             # Resolve the original key used in video file naming.
             # Use the video key mapping if the config key differs from the dataset meta key.
             meta_key = self._video_key_mapping.get(image_key, image_key)
